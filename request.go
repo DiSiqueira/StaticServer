@@ -10,7 +10,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -735,34 +734,6 @@ func validMethod(method string) bool {
 	return len(method) > 0 && strings.IndexFunc(method, isNotToken) == -1
 }
 
-// parseBasicAuth parses an HTTP Basic Authentication string.
-// "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" returns ("Aladdin", "open sesame", true).
-func parseBasicAuth(auth string) (username, password string, ok bool) {
-	const prefix = "Basic "
-	if !strings.HasPrefix(auth, prefix) {
-		return
-	}
-	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
-	if err != nil {
-		return
-	}
-	cs := string(c)
-	s := strings.IndexByte(cs, ':')
-	if s < 0 {
-		return
-	}
-	return cs[:s], cs[s+1:], true
-}
-
-// SetBasicAuth sets the request's Authorization header to use HTTP
-// Basic Authentication with the provided username and password.
-//
-// With HTTP Basic Authentication the provided username and password
-// are not encrypted.
-func (r *Request) SetBasicAuth(username, password string) {
-	r.Header.Set("Authorization", "Basic "+basicAuth(username, password))
-}
-
 // parseRequestLine parses "GET /foo HTTP/1.1" into its three parts.
 func parseRequestLine(line string) (requestURI string, ok bool) {
 	s1 := strings.Index(line, " ")
@@ -806,14 +777,6 @@ func readRequest(b *bufio.Reader) (req *Request, err error) {
 	}
 
 	return req, nil
-}
-
-func copyValues(dst, src url.Values) {
-	for k, vs := range src {
-		for _, value := range vs {
-			dst.Add(k, value)
-		}
-	}
 }
 
 func (r *Request) expectsContinue() bool {
