@@ -108,11 +108,6 @@ type Response struct {
 	TLS *tls.ConnectionState
 }
 
-// Cookies parses and returns the cookies set in the Set-Cookie headers.
-func (r *Response) Cookies() []*Cookie {
-	return readSetCookies(r.Header)
-}
-
 // ErrNoLocation is returned by Response's Location method
 // when no Location header is present.
 var ErrNoLocation = errors.New("http: no Location header in response")
