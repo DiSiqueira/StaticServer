@@ -347,43 +347,6 @@ func (r *Request) protoAtLeastOutgoing(major, minor int) bool {
 	return r.ProtoAtLeast(major, minor)
 }
 
-// UserAgent returns the client's User-Agent, if sent in the request.
-func (r *Request) UserAgent() string {
-	return r.Header.Get("User-Agent")
-}
-
-// Cookies parses and returns the HTTP cookies sent with the request.
-func (r *Request) Cookies() []*Cookie {
-	return readCookies(r.Header, "")
-}
-
-// ErrNoCookie is returned by Request's Cookie method when a cookie is not found.
-var ErrNoCookie = errors.New("http: named cookie not present")
-
-// Cookie returns the named cookie provided in the request or
-// ErrNoCookie if not found.
-// If multiple cookies match the given name, only one cookie will
-// be returned.
-func (r *Request) Cookie(name string) (*Cookie, error) {
-	for _, c := range readCookies(r.Header, name) {
-		return c, nil
-	}
-	return nil, ErrNoCookie
-}
-
-// AddCookie adds a cookie to the request. Per RFC 6265 section 5.4,
-// AddCookie does not attach more than one Cookie header field. That
-// means all cookies, if any, are written into the same line,
-// separated by semicolon.
-func (r *Request) AddCookie(c *Cookie) {
-	s := fmt.Sprintf("%s=%s", sanitizeCookieName(c.Name), sanitizeCookieValue(c.Value))
-	if c := r.Header.Get("Cookie"); c != "" {
-		r.Header.Set("Cookie", c+"; "+s)
-	} else {
-		r.Header.Set("Cookie", s)
-	}
-}
-
 // Referer returns the referring URL, if sent in the request.
 //
 // Referer is misspelled as in the request itself, a mistake from the
