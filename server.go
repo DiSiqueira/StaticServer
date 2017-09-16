@@ -395,7 +395,6 @@ func (w *response) finalTrailers() Header {
 type atomicBool int32
 
 func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
-func (b *atomicBool) setTrue()    { atomic.StoreInt32((*int32)(b), 1) }
 
 // declareTrailer is called for each Trailer header when the
 // response header is written. It notes that a header will need to be
@@ -516,20 +515,6 @@ func (cr *connReader) lock() {
 
 func (cr *connReader) unlock() { cr.mu.Unlock() }
 
-func (cr *connReader) abortPendingRead() {
-	cr.lock()
-	defer cr.unlock()
-	if !cr.inRead {
-		return
-	}
-	cr.aborted = true
-	cr.conn.rwc.SetReadDeadline(aLongTimeAgo)
-	for cr.inRead {
-		cr.cond.Wait()
-	}
-	cr.conn.rwc.SetReadDeadline(time.Time{})
-}
-
 // may be called from multiple goroutines.
 func (cr *connReader) handleReadError(err error) {
 	cr.conn.cancelCtx()
@@ -598,11 +583,6 @@ func newBufioReader(r io.Reader) *bufio.Reader {
 	// Note: if this reader size is ever changed, update
 	// TestHandlerBodyClose's assumptions.
 	return bufio.NewReader(r)
-}
-
-func putBufioReader(br *bufio.Reader) {
-	br.Reset(nil)
-	bufioReaderPool.Put(br)
 }
 
 func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
@@ -1040,82 +1020,11 @@ func (w *response) Flush() {
 	w.cw.flush()
 }
 
-func (c *conn) finalFlush() {
-	if c.bufr != nil {
-		// Steal the bufio.Reader (~4KB worth of memory) and its associated
-		// reader for a future connection.
-		putBufioReader(c.bufr)
-		c.bufr = nil
-	}
-
-	if c.bufw != nil {
-		c.bufw.Flush()
-		// Steal the bufio.Writer (~4KB worth of memory) and its associated
-		// writer for a future connection.
-		putBufioWriter(c.bufw)
-		c.bufw = nil
-	}
-}
-
-// Close the connection.
-func (c *conn) close() {
-	c.finalFlush()
-	c.rwc.Close()
-}
-
-// rstAvoidanceDelay is the amount of time we sleep after closing the
-// write side of a TCP connection before closing the entire socket.
-// By sleeping, we increase the chances that the client sees our FIN
-// and processes its final data before they process the subsequent RST
-// from closing a connection with known unread data.
-// This RST seems to occur mostly on BSD systems. (And Windows?)
-// This timeout is somewhat arbitrary (~latency around the planet).
-const rstAvoidanceDelay = 500 * time.Millisecond
-
 type closeWriter interface {
 	CloseWrite() error
 }
 
 var _ closeWriter = (*net.TCPConn)(nil)
-
-// closeWrite flushes any outstanding data and sends a FIN packet (if
-// client is connected via TCP), signalling that we're done. We then
-// pause for a bit, hoping the client processes it before any
-// subsequent RST.
-//
-// See https://golang.org/issue/3595
-func (c *conn) closeWriteAndWait() {
-	c.finalFlush()
-	if tcp, ok := c.rwc.(closeWriter); ok {
-		tcp.CloseWrite()
-	}
-	time.Sleep(rstAvoidanceDelay)
-}
-
-func (c *conn) setState(nc net.Conn, state ConnState) {
-	srv := c.server
-	switch state {
-	case StateNew:
-		srv.trackConn(c, true)
-	case StateClosed:
-		srv.trackConn(c, false)
-	}
-	c.curState.Store(connStateInterface[state])
-	if hook := srv.ConnState; hook != nil {
-		hook(nc, state)
-	}
-}
-
-// connStateInterface is an array of the interface{} versions of
-// ConnState values, so we can use them in atomic.Values later without
-// paying the cost of shoving their integers in an interface{}.
-var connStateInterface = [...]interface{}{
-	StateNew:      StateNew,
-	StateActive:   StateActive,
-	StateIdle:     StateIdle,
-	StateHijacked: StateHijacked,
-	StateClosed:   StateClosed,
-}
 
 // badRequestError is a literal string (used by in the server in HTML,
 // unescaped) to tell the user why their request was bad. It should
@@ -1144,11 +1053,6 @@ func (w *response) CloseNotify() <-chan bool {
 // with the appropriate signature, HandlerFunc(f) is a
 // Handler that calls f.
 type HandlerFunc func(ResponseWriter, *Request)
-
-// ServeHTTP calls f(w, r).
-func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
-	f(w, r)
-}
 
 // Helper handlers
 
@@ -1349,37 +1253,6 @@ var stateName = map[ConnState]string{
 
 func (c ConnState) String() string {
 	return stateName[c]
-}
-
-func (s *Server) trackListener(ln net.Listener, add bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.listeners == nil {
-		s.listeners = make(map[net.Listener]struct{})
-	}
-	if add {
-		// If the *Server is being reused after a previous
-		// Close or Shutdown, reset its doneChan:
-		if len(s.listeners) == 0 && len(s.activeConn) == 0 {
-			s.doneChan = nil
-		}
-		s.listeners[ln] = struct{}{}
-	} else {
-		delete(s.listeners, ln)
-	}
-}
-
-func (s *Server) trackConn(c *conn, add bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.activeConn == nil {
-		s.activeConn = make(map[*conn]struct{})
-	}
-	if add {
-		s.activeConn[c] = struct{}{}
-	} else {
-		delete(s.activeConn, c)
-	}
 }
 
 func (s *Server) doKeepAlives() bool {

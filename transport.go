@@ -574,20 +574,6 @@ func (t *Transport) connectMethodForRequest(treq *transportRequest) (cm connectM
 	return cm, err
 }
 
-// proxyAuth returns the Proxy-Authorization header to set
-// on requests, if applicable.
-func (cm *connectMethod) proxyAuth() string {
-	if cm.proxyURL == nil {
-		return ""
-	}
-	if u := cm.proxyURL.User; u != nil {
-		username := u.Username()
-		password, _ := u.Password()
-		return "Basic " + basicAuth(username, password)
-	}
-	return ""
-}
-
 // error values for debugging and testing, not seen by users.
 var (
 	errKeepAlivesDisabled = errors.New("http: putIdleConn: keep alives disabled")

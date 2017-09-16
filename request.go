@@ -435,12 +435,6 @@ func (r *Request) multipartReader() (*multipart.Reader, error) {
 	return multipart.NewReader(r.Body, boundary), nil
 }
 
-// isH2Upgrade reports whether r represents the http2 "client preface"
-// magic string.
-func (r *Request) isH2Upgrade() bool {
-	return r.Method == "PRI" && len(r.Header) == 0 && r.URL.Path == "*" && r.Proto == "HTTP/2.0"
-}
-
 // Return value if nonempty, def otherwise.
 func valueOrDefault(value, def string) string {
 	if value != "" {
@@ -733,17 +727,6 @@ func validMethod(method string) bool {
 
 func (r *Request) expectsContinue() bool {
 	return hasToken(r.Header.get("Expect"), "100-continue")
-}
-
-func (r *Request) wantsHttp10KeepAlive() bool {
-	if r.ProtoMajor != 1 || r.ProtoMinor != 0 {
-		return false
-	}
-	return hasToken(r.Header.get("Connection"), "keep-alive")
-}
-
-func (r *Request) wantsClose() bool {
-	return hasToken(r.Header.get("Connection"), "close")
 }
 
 func (r *Request) closeBody() {
