@@ -384,12 +384,6 @@ func (w *response) declareTrailer(k string) {
 	w.trailers = append(w.trailers, k)
 }
 
-// needsSniff reports whether a Content-Type still needs to be sniffed.
-func (w *response) needsSniff() bool {
-	_, haveType := w.handlerHeader["Content-Type"]
-	return !w.cw.wroteHeader && !haveType && w.written < sniffLen
-}
-
 // writerOnly hides an io.Writer value's optional ReadFrom method
 // from io.Copy.
 type writerOnly struct {
@@ -432,14 +426,6 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 
 	if !w.wroteHeader {
 		w.WriteHeader(StatusOK)
-	}
-
-	if w.needsSniff() {
-		n0, err := io.Copy(writerOnly{w}, io.LimitReader(src, sniffLen))
-		n += n0
-		if err != nil {
-			return n, err
-		}
 	}
 
 	w.w.Flush()  // get rid of any previous writes
@@ -769,17 +755,6 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	w.closeAfterReply = true
 
 	code := w.status
-	if bodyAllowedForStatus(code) {
-		// If no content type, apply sniffing algorithm to body.
-		_, haveType := header["Content-Type"]
-		if !haveType && !hasTE {
-			setHeader.contentType = DetectContentType(p)
-		}
-	} else {
-		for _, k := range suppressedHeaders(code) {
-			delHeader(k)
-		}
-	}
 
 	if hasCL && hasTE && te != "identity" {
 		// TODO: return an error if WriteHeader gets a return parameter
