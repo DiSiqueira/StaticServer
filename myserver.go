@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -11,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 type Server struct {
@@ -59,52 +56,15 @@ func (s *Server) logf(format string, args ...interface{}) {
 }
 
 type conn struct {
-	// server is the server on which the connection arrived.
-	// Immutable; never nil.
 	server *Server
-
-	// cancelCtx cancels the connection-level context.
-	cancelCtx context.CancelFunc
-
-	// rwc is the underlying network connection.
-	// This is never wrapped by other types and is the value given out
-	// to CloseNotifier callers. It is usually of type *net.TCPConn or
-	// *tls.Conn.
-	rwc net.Conn
-
-	// remoteAddr is rwc.RemoteAddr().String(). It is not populated synchronously
-	// inside the Listener's Accept goroutine, as some implementations block.
-	// It is populated immediately inside the (*conn).serve goroutine.
-	// This is the value of a Handler's (*Request).RemoteAddr.
-	remoteAddr string
-
-	// tlsState is the TLS connection state when using TLS.
-	// nil means not TLS.
-	tlsState *tls.ConnectionState
-
-	// werr is set to the first write error to rwc.
-	// It is set via checkConnErrorWriter{w}, where bufw writes.
-	werr error
-
-	// r is bufr's read source. It's a wrapper around rwc that provides
-	// io.LimitedReader-style limiting (while reading request headers)
-	// and functionality to support CloseNotifier. See *connReader docs.
-	r *connReader
-
-	// bufr reads from r.
-	bufr *bufio.Reader
-
-	// bufw writes to checkConnErrorWriter{c}, which populates werr on error.
-	bufw *bufio.Writer
-
-	curReq atomic.Value // of *response (which has a Request in it)
-
-	curState atomic.Value // of ConnState
+	rwc    net.Conn
+	werr   error
+	r      *connReader
+	bufr   *bufio.Reader
+	bufw   *bufio.Writer
 }
 
 func (c *conn) serve() {
-	c.remoteAddr = c.rwc.RemoteAddr().String()
-
 	c.r = &connReader{conn: c}
 	c.bufr = newBufioReader(c.r)
 	c.bufw = newBufioWriterSize(checkConnErrorWriter{c}, 4<<10)
@@ -214,4 +174,16 @@ func bufioWriterPool(size int) *sync.Pool {
 		return &bufioWriter4kPool
 	}
 	return nil
+}
+
+type checkConnErrorWriter struct {
+	c *conn
+}
+
+func (w checkConnErrorWriter) Write(p []byte) (n int, err error) {
+	n, err = w.c.rwc.Write(p)
+	if err != nil && w.c.werr == nil {
+		w.c.werr = err
+	}
+	return
 }

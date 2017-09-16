@@ -514,22 +514,6 @@ func (cr *connReader) lock() {
 
 func (cr *connReader) unlock() { cr.mu.Unlock() }
 
-// may be called from multiple goroutines.
-func (cr *connReader) handleReadError(err error) {
-	cr.conn.cancelCtx()
-	cr.closeNotify()
-}
-
-// may be called from multiple goroutines.
-func (cr *connReader) closeNotify() {
-	res, _ := cr.conn.curReq.Load().(*response)
-	if res != nil {
-		if atomic.CompareAndSwapInt32(&res.didCloseNotify, 0, 1) {
-			res.closeNotifyCh <- true
-		}
-	}
-}
-
 func (cr *connReader) Read(p []byte) (n int, err error) {
 	cr.lock()
 	if cr.inRead {
@@ -554,13 +538,6 @@ func (cr *connReader) Read(p []byte) (n int, err error) {
 	cr.inRead = true
 	cr.unlock()
 	n, err = cr.conn.rwc.Read(p)
-
-	cr.lock()
-	cr.inRead = false
-	if err != nil {
-		cr.handleReadError(err)
-	}
-	cr.unlock()
 
 	cr.cond.Broadcast()
 	return n, err
@@ -1165,20 +1142,4 @@ func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(3 * time.Minute)
 	return tc, nil
-}
-
-// checkConnErrorWriter writes to c.rwc and records any write errors to c.werr.
-// It only contains one field (and a pointer field at that), so it
-// fits in an interface value without an extra allocation.
-type checkConnErrorWriter struct {
-	c *conn
-}
-
-func (w checkConnErrorWriter) Write(p []byte) (n int, err error) {
-	n, err = w.c.rwc.Write(p)
-	if err != nil && w.c.werr == nil {
-		w.c.werr = err
-		w.c.cancelCtx()
-	}
-	return
 }
