@@ -10,7 +10,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -216,57 +215,9 @@ var (
 )
 
 // A conn represents the server side of an HTTP connection.
-type conn struct {
-	// server is the server on which the connection arrived.
-	// Immutable; never nil.
-	server *Server
-
-	// cancelCtx cancels the connection-level context.
-	cancelCtx context.CancelFunc
-
-	// rwc is the underlying network connection.
-	// This is never wrapped by other types and is the value given out
-	// to CloseNotifier callers. It is usually of type *net.TCPConn or
-	// *tls.Conn.
-	rwc net.Conn
-
-	// remoteAddr is rwc.RemoteAddr().String(). It is not populated synchronously
-	// inside the Listener's Accept goroutine, as some implementations block.
-	// It is populated immediately inside the (*conn).serve goroutine.
-	// This is the value of a Handler's (*Request).RemoteAddr.
-	remoteAddr string
-
-	// tlsState is the TLS connection state when using TLS.
-	// nil means not TLS.
-	tlsState *tls.ConnectionState
-
-	// werr is set to the first write error to rwc.
-	// It is set via checkConnErrorWriter{w}, where bufw writes.
-	werr error
-
-	// r is bufr's read source. It's a wrapper around rwc that provides
-	// io.LimitedReader-style limiting (while reading request headers)
-	// and functionality to support CloseNotifier. See *connReader docs.
-	r *connReader
-
-	// bufr reads from r.
-	bufr *bufio.Reader
-
-	// bufw writes to checkConnErrorWriter{c}, which populates werr on error.
-	bufw *bufio.Writer
-
-	// lastMethod is the method of the most recent request
-	// on this connection, if any.
-	lastMethod string
-
-	curReq atomic.Value // of *response (which has a Request in it)
-
-	curState atomic.Value // of ConnState
-}
 
 // This should be >= 512 bytes for DetectContentType,
 // but otherwise it's somewhat arbitrary.
-const bufferBeforeChunkingSize = 2048
 
 // chunkWriter writes to a response's conn buffer, and is the writer
 // wrapped by the response.bufw buffered writer.
@@ -533,15 +484,6 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 	return n, err
 }
 
-// Create new connection from rwc.
-func (srv *Server) newConn(rwc net.Conn) *conn {
-	c := &conn{
-		server: srv,
-		rwc:    rwc,
-	}
-	return c
-}
-
 type readResult struct {
 	n   int
 	err error
@@ -640,27 +582,11 @@ func (cr *connReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-var (
-	bufioReaderPool   sync.Pool
-	bufioWriter2kPool sync.Pool
-	bufioWriter4kPool sync.Pool
-)
-
 var copyBufPool = sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, 32*1024)
 		return &b
 	},
-}
-
-func bufioWriterPool(size int) *sync.Pool {
-	switch size {
-	case 2 << 10:
-		return &bufioWriter2kPool
-	case 4 << 10:
-		return &bufioWriter4kPool
-	}
-	return nil
 }
 
 func newBufioReader(r io.Reader) *bufio.Reader {
@@ -689,13 +615,6 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 		}
 	}
 	return bufio.NewWriterSize(w, size)
-}
-
-func putBufioWriter(bw *bufio.Writer) {
-	bw.Reset(nil)
-	if pool := bufioWriterPool(bw.Available()); pool != nil {
-		pool.Put(bw)
-	}
 }
 
 // DefaultMaxHeaderBytes is the maximum permitted size of the headers
@@ -736,53 +655,7 @@ func (ecr *expectContinueReader) Close() error {
 // For parsing this time format, see ParseTime.
 const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
 
-// appendTime is a non-allocating version of []byte(t.UTC().Format(TimeFormat))
-func appendTime(b []byte, t time.Time) []byte {
-	const days = "SunMonTueWedThuFriSat"
-	const months = "JanFebMarAprMayJunJulAugSepOctNovDec"
-
-	t = t.UTC()
-	yy, mm, dd := t.Date()
-	hh, mn, ss := t.Clock()
-	day := days[3*t.Weekday():]
-	mon := months[3*(mm-1):]
-
-	return append(b,
-		day[0], day[1], day[2], ',', ' ',
-		byte('0'+dd/10), byte('0'+dd%10), ' ',
-		mon[0], mon[1], mon[2], ' ',
-		byte('0'+yy/1000), byte('0'+(yy/100)%10), byte('0'+(yy/10)%10), byte('0'+yy%10), ' ',
-		byte('0'+hh/10), byte('0'+hh%10), ':',
-		byte('0'+mn/10), byte('0'+mn%10), ':',
-		byte('0'+ss/10), byte('0'+ss%10), ' ',
-		'G', 'M', 'T')
-}
-
-var errTooLarge = errors.New("http: request too large")
-
 // Read next request from connection.
-func (c *conn) readRequest(ctx context.Context) (w *response, err error) {
-	req, err := readRequest(c.bufr)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, cancelCtx := context.WithCancel(ctx)
-	req.ctx = ctx
-
-	w = &response{
-		conn:          c,
-		cancelCtx:     cancelCtx,
-		req:           req,
-		handlerHeader: make(Header),
-		contentLength: -1,
-		closeNotifyCh: make(chan bool, 1),
-	}
-
-	w.cw.res = w
-	w.w = newBufioWriterSize(&w.cw, bufferBeforeChunkingSize)
-	return w, nil
-}
 
 func (w *response) Header() Header {
 	if w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader {
@@ -997,10 +870,6 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		}
 	}
 
-	if _, ok := header["Date"]; !ok {
-		setHeader.date = appendTime(cw.res.dateBuf[:0], time.Now())
-	}
-
 	if hasCL && hasTE && te != "identity" {
 		// TODO: return an error if WriteHeader gets a return parameter
 		// For now just ignore the Content-Length.
@@ -1163,21 +1032,6 @@ func (w *response) write(lenData int, dataB []byte, dataS string) (n int, err er
 	}
 }
 
-func (w *response) finishRequest() {
-	w.handlerDone.setTrue()
-
-	if !w.wroteHeader {
-		w.WriteHeader(StatusOK)
-	}
-
-	w.w.Flush()
-	putBufioWriter(w.w)
-	w.cw.close()
-	w.conn.bufw.Flush()
-
-	w.conn.r.abortPendingRead()
-}
-
 func (w *response) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(StatusOK)
@@ -1277,27 +1131,6 @@ func (e badRequestError) Error() string { return "Bad Request: " + string(e) }
 var ErrAbortHandler = errors.New("net/http: abort Handler")
 
 // Serve a new connection.
-func (c *conn) serve(ctx context.Context) {
-	c.remoteAddr = c.rwc.RemoteAddr().String()
-
-	c.r = &connReader{conn: c}
-	c.bufr = newBufioReader(c.r)
-	c.bufw = newBufioWriterSize(checkConnErrorWriter{c}, 4<<10)
-
-	for {
-		w, err := c.readRequest(ctx)
-		if err != nil {
-			return
-		}
-
-		serverHandler{c.server}.ServeHTTP(w, w.req)
-		w.cancelCtx()
-		w.finishRequest()
-
-		c.closeWriteAndWait()
-		return
-	}
-}
 
 func (w *response) CloseNotify() <-chan bool {
 	if w.handlerDone.isSet() {
@@ -1346,80 +1179,6 @@ type muxEntry struct {
 func Serve(l net.Listener, handler Handler) error {
 	srv := &Server{Handler: handler}
 	return srv.Serve(l)
-}
-
-// A Server defines parameters for running an HTTP server.
-// The zero value for Server is a valid configuration.
-type Server struct {
-	Port      uint16
-	Handler   Handler     // handler to invoke, http.DefaultServeMux if nil
-	TLSConfig *tls.Config // optional TLS config, used by ListenAndServeTLS
-
-	// ReadTimeout is the maximum duration for reading the entire
-	// request, including the body.
-	//
-	// Because ReadTimeout does not let Handlers make per-request
-	// decisions on each request body's acceptable deadline or
-	// upload rate, most users will prefer to use
-	// ReadHeaderTimeout. It is valid to use them both.
-	ReadTimeout time.Duration
-
-	// ReadHeaderTimeout is the amount of time allowed to read
-	// request headers. The connection's read deadline is reset
-	// after reading the headers and the Handler can decide what
-	// is considered too slow for the body.
-	ReadHeaderTimeout time.Duration
-
-	// WriteTimeout is the maximum duration before timing out
-	// writes of the response. It is reset whenever a new
-	// request's header is read. Like ReadTimeout, it does not
-	// let Handlers make decisions on a per-request basis.
-	WriteTimeout time.Duration
-
-	// IdleTimeout is the maximum amount of time to wait for the
-	// next request when keep-alives are enabled. If IdleTimeout
-	// is zero, the value of ReadTimeout is used. If both are
-	// zero, there is no timeout.
-	IdleTimeout time.Duration
-
-	// MaxHeaderBytes controls the maximum number of bytes the
-	// server will read parsing the request header's keys and
-	// values, including the request line. It does not limit the
-	// size of the request body.
-	// If zero, DefaultMaxHeaderBytes is used.
-	MaxHeaderBytes int
-
-	// TLSNextProto optionally specifies a function to take over
-	// ownership of the provided TLS connection when an NPN/ALPN
-	// protocol upgrade has occurred. The map key is the protocol
-	// name negotiated. The Handler argument should be used to
-	// handle HTTP requests and will initialize the Request's TLS
-	// and RemoteAddr if not already set. The connection is
-	// automatically closed when the function returns.
-	// If TLSNextProto is not nil, HTTP/2 support is not enabled
-	// automatically.
-	TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
-
-	// ConnState specifies an optional callback function that is
-	// called when a client connection changes state. See the
-	// ConnState type and associated constants for details.
-	ConnState func(net.Conn, ConnState)
-
-	// ErrorLog specifies an optional logger for errors accepting
-	// connections and unexpected behavior from handlers.
-	// If nil, logging goes to os.Stderr via the log package's
-	// standard logger.
-	ErrorLog *log.Logger
-
-	disableKeepAlives int32     // accessed atomically.
-	inShutdown        int32     // accessed atomically (non-zero means we're in Shutdown)
-	nextProtoOnce     sync.Once // guards setupHTTP2_* init
-	nextProtoErr      error     // result of http2.ConfigureServer if used
-
-	mu         sync.Mutex
-	listeners  map[net.Listener]struct{}
-	activeConn map[*conn]struct{}
-	doneChan   chan struct{}
 }
 
 func (s *Server) getDoneChan() <-chan struct{} {
@@ -1592,58 +1351,6 @@ func (c ConnState) String() string {
 	return stateName[c]
 }
 
-// serverHandler delegates to either the server's Handler or
-// DefaultServeMux and also handles "OPTIONS *" requests.
-type serverHandler struct {
-	srv *Server
-}
-
-func (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {
-	sh.srv.Handler.ServeHTTP(rw, req)
-}
-
-// ListenAndServe listens on the TCP network address srv.Addr and then
-// calls Serve to handle requests on incoming connections.
-// Accepted connections are configured to enable TCP keep-alives.
-// If srv.Addr is blank, ":http" is used.
-// ListenAndServe always returns a non-nil error.
-func (srv *Server) ListenAndServe() error {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", srv.Port))
-	if err != nil {
-		return err
-	}
-	return srv.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
-}
-
-// Serve accepts incoming connections on the Listener l, creating a
-// new service goroutine for each. The service goroutines read requests and
-// then call srv.Handler to reply to them.
-//
-// For HTTP/2 support, srv.TLSConfig should be initialized to the
-// provided listener's TLS Config before calling Serve. If
-// srv.TLSConfig is non-nil and doesn't include the string "h2" in
-// Config.NextProtos, HTTP/2 support is not enabled.
-//
-// Serve always returns a non-nil error. After Shutdown or Close, the
-// returned error is ErrServerClosed.
-func (srv *Server) Serve(l net.Listener) error {
-	defer l.Close()
-
-	srv.trackListener(l, true)
-	defer srv.trackListener(l, false)
-
-	ctx := context.Background()
-	for {
-		rw, e := l.Accept()
-		if e != nil {
-			return e
-		}
-		c := srv.newConn(rw)
-		c.setState(c.rwc, StateNew) // before Serve can return
-		go c.serve(ctx)
-	}
-}
-
 func (s *Server) trackListener(ln net.Listener, add bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1713,11 +1420,6 @@ func (s *Server) logf(format string, args ...interface{}) {
 	} else {
 		log.Printf(format, args...)
 	}
-}
-
-func ListenAndServe(port uint16, handler Handler) error {
-	server := &Server{Port: port, Handler: handler}
-	return server.ListenAndServe()
 }
 
 // ErrHandlerTimeout is returned on ResponseWriter Write calls

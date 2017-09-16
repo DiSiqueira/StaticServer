@@ -12,20 +12,17 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
-	"net"
-	"net/textproto"
-	"net/url"
-	"strconv"
-	"strings"
-	"sync"
-
 	"golang.org/x/net/idna"
 	"golang.org/x/text/unicode/norm"
 	"golang.org/x/text/width"
+	"io"
 	"mime"
+	"mime/multipart"
+	"net"
 	"net/http/httptrace"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -732,51 +729,6 @@ func validMethod(method string) bool {
 	     token          = 1*<any CHAR except CTLs or separators>
 	*/
 	return len(method) > 0 && strings.IndexFunc(method, isNotToken) == -1
-}
-
-// parseRequestLine parses "GET /foo HTTP/1.1" into its three parts.
-func parseRequestLine(line string) (requestURI string, ok bool) {
-	s1 := strings.Index(line, " ")
-	s2 := strings.Index(line[s1+1:], " ")
-	if s1 < 0 || s2 < 0 {
-		return
-	}
-	s2 += s1 + 1
-	return line[s1+1 : s2], true
-}
-
-var textprotoReaderPool sync.Pool
-
-func newTextprotoReader(br *bufio.Reader) *textproto.Reader {
-	if v := textprotoReaderPool.Get(); v != nil {
-		tr := v.(*textproto.Reader)
-		tr.R = br
-		return tr
-	}
-	return textproto.NewReader(br)
-}
-
-func readRequest(b *bufio.Reader) (req *Request, err error) {
-	tp := newTextprotoReader(b)
-	req = new(Request)
-
-	// First line: GET /index.html HTTP/1.0
-	s, err := tp.ReadLine()
-	if err != nil {
-		return nil, err
-	}
-
-	var ok bool
-	req.RequestURI, ok = parseRequestLine(s)
-	if !ok {
-		return nil, &badStringError{"malformed HTTP request", s}
-	}
-
-	if req.URL, err = url.ParseRequestURI(req.RequestURI); err != nil {
-		return nil, err
-	}
-
-	return req, nil
 }
 
 func (r *Request) expectsContinue() bool {

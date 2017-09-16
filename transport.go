@@ -1008,42 +1008,6 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistCon
 		// Do nothing. Not using a proxy.
 	case cm.targetScheme == "http":
 		pconn.isProxy = true
-		if pa := cm.proxyAuth(); pa != "" {
-			pconn.mutateHeaderFunc = func(h Header) {
-				h.Set("Proxy-Authorization", pa)
-			}
-		}
-	case cm.targetScheme == "https":
-		conn := pconn.conn
-		hdr := t.ProxyConnectHeader
-		if hdr == nil {
-			hdr = make(Header)
-		}
-		connectReq := &Request{
-			Method: "CONNECT",
-			URL:    &url.URL{Opaque: cm.targetAddr},
-			Host:   cm.targetAddr,
-			Header: hdr,
-		}
-		if pa := cm.proxyAuth(); pa != "" {
-			connectReq.Header.Set("Proxy-Authorization", pa)
-		}
-		connectReq.Write(conn)
-
-		// Read response.
-		// Okay to use and discard buffered reader here, because
-		// TLS server will not speak until spoken to.
-		br := bufio.NewReader(conn)
-		resp, err := ReadResponse(br, connectReq)
-		if err != nil {
-			conn.Close()
-			return nil, err
-		}
-		if resp.StatusCode != 200 {
-			f := strings.SplitN(resp.Status, " ", 2)
-			conn.Close()
-			return nil, errors.New(f[1])
-		}
 	}
 
 	if cm.targetScheme == "https" && !tlsDial {
