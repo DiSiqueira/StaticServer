@@ -3072,15 +3072,10 @@ func (o *http2ServeConnOpts) baseConfig() *Server {
 }
 
 func (o *http2ServeConnOpts) handler() Handler {
-	if o != nil {
-		if o.Handler != nil {
-			return o.Handler
-		}
-		if o.BaseConfig != nil && o.BaseConfig.Handler != nil {
-			return o.BaseConfig.Handler
-		}
+	if o.Handler != nil {
+		return o.Handler
 	}
-	return DefaultServeMux
+	return o.BaseConfig.Handler
 }
 
 // ServeConn serves HTTP/2 requests on the provided connection and

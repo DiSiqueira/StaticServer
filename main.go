@@ -5,9 +5,10 @@ import (
 )
 
 func main() {
-	fs := FileServer(Dir("/files"))
-	Handle("/", fs)
+	urls := fileTable{}
+	urls["/"] = NewFile("./files/teste.html", ContentTypeHTML)
 
 	log.Println("Listening...")
-	ListenAndServe(":8080")
+
+	ListenAndServe(8080, NewFileTableServer(urls))
 }

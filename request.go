@@ -14,11 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"mime"
 	"mime/multipart"
 	"net"
-	"net/http/httptrace"
 	"net/textproto"
 	"net/url"
 	"strconv"
@@ -28,6 +25,8 @@ import (
 	"golang.org/x/net/idna"
 	"golang.org/x/text/unicode/norm"
 	"golang.org/x/text/width"
+	"mime"
+	"net/http/httptrace"
 )
 
 const (
@@ -736,17 +735,6 @@ func validMethod(method string) bool {
 	return len(method) > 0 && strings.IndexFunc(method, isNotToken) == -1
 }
 
-// BasicAuth returns the username and password provided in the request's
-// Authorization header, if the request uses HTTP Basic Authentication.
-// See RFC 2617, Section 2.
-func (r *Request) BasicAuth() (username, password string, ok bool) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return
-	}
-	return parseBasicAuth(auth)
-}
-
 // parseBasicAuth parses an HTTP Basic Authentication string.
 // "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" returns ("Aladdin", "open sesame", true).
 func parseBasicAuth(auth string) (username, password string, ok bool) {
@@ -776,14 +764,14 @@ func (r *Request) SetBasicAuth(username, password string) {
 }
 
 // parseRequestLine parses "GET /foo HTTP/1.1" into its three parts.
-func parseRequestLine(line string) (method, requestURI, proto string, ok bool) {
+func parseRequestLine(line string) (requestURI string, ok bool) {
 	s1 := strings.Index(line, " ")
 	s2 := strings.Index(line[s1+1:], " ")
 	if s1 < 0 || s2 < 0 {
 		return
 	}
 	s2 += s1 + 1
-	return line[:s1], line[s1+1 : s2], line[s2+1:], true
+	return line[s1+1 : s2], true
 }
 
 var textprotoReaderPool sync.Pool
@@ -797,172 +785,27 @@ func newTextprotoReader(br *bufio.Reader) *textproto.Reader {
 	return textproto.NewReader(br)
 }
 
-func putTextprotoReader(r *textproto.Reader) {
-	r.R = nil
-	textprotoReaderPool.Put(r)
-}
-
-// Constants for readRequest's deleteHostHeader parameter.
-const (
-	deleteHostHeader = true
-	keepHostHeader   = false
-)
-
-func readRequest(b *bufio.Reader, deleteHostHeader bool) (req *Request, err error) {
+func readRequest(b *bufio.Reader) (req *Request, err error) {
 	tp := newTextprotoReader(b)
 	req = new(Request)
 
 	// First line: GET /index.html HTTP/1.0
-	var s string
-	if s, err = tp.ReadLine(); err != nil {
+	s, err := tp.ReadLine()
+	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		putTextprotoReader(tp)
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-	}()
 
 	var ok bool
-	req.Method, req.RequestURI, req.Proto, ok = parseRequestLine(s)
+	req.RequestURI, ok = parseRequestLine(s)
 	if !ok {
 		return nil, &badStringError{"malformed HTTP request", s}
 	}
-	rawurl := req.RequestURI
-	if req.ProtoMajor, req.ProtoMinor, ok = ParseHTTPVersion(req.Proto); !ok {
-		return nil, &badStringError{"malformed HTTP version", req.Proto}
-	}
 
-	// CONNECT requests are used two different ways, and neither uses a full URL:
-	// The standard use is to tunnel HTTPS through an HTTP proxy.
-	// It looks like "CONNECT www.google.com:443 HTTP/1.1", and the parameter is
-	// just the authority section of a URL. This information should go in req.URL.Host.
-	//
-	// The net/rpc package also uses CONNECT, but there the parameter is a path
-	// that starts with a slash. It can be parsed with the regular URL parser,
-	// and the path will end up in req.URL.Path, where it needs to be in order for
-	// RPC to work.
-	justAuthority := req.Method == "CONNECT" && !strings.HasPrefix(rawurl, "/")
-	if justAuthority {
-		rawurl = "http://" + rawurl
-	}
-
-	if req.URL, err = url.ParseRequestURI(rawurl); err != nil {
+	if req.URL, err = url.ParseRequestURI(req.RequestURI); err != nil {
 		return nil, err
 	}
 
-	if justAuthority {
-		// Strip the bogus "http://" back off.
-		req.URL.Scheme = ""
-	}
-
-	// Subsequent lines: Key: value.
-	mimeHeader, err := tp.ReadMIMEHeader()
-	if err != nil {
-		return nil, err
-	}
-	req.Header = Header(mimeHeader)
-
-	// RFC 2616: Must treat
-	//	GET /index.html HTTP/1.1
-	//	Host: www.google.com
-	// and
-	//	GET http://www.google.com/index.html HTTP/1.1
-	//	Host: doesntmatter
-	// the same. In the second case, any Host line is ignored.
-	req.Host = req.URL.Host
-	if req.Host == "" {
-		req.Host = req.Header.get("Host")
-	}
-	if deleteHostHeader {
-		delete(req.Header, "Host")
-	}
-
-	fixPragmaCacheControl(req.Header)
-
-	req.Close = shouldClose(req.ProtoMajor, req.ProtoMinor, req.Header, false)
-
-	err = readTransfer(req, b)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.isH2Upgrade() {
-		// Because it's neither chunked, nor declared:
-		req.ContentLength = -1
-
-		// We want to give handlers a chance to hijack the
-		// connection, but we need to prevent the Server from
-		// dealing with the connection further if it's not
-		// hijacked. Set Close to ensure that:
-		req.Close = true
-	}
 	return req, nil
-}
-
-// MaxBytesReader is similar to io.LimitReader but is intended for
-// limiting the size of incoming request bodies. In contrast to
-// io.LimitReader, MaxBytesReader's result is a ReadCloser, returns a
-// non-EOF error for a Read beyond the limit, and closes the
-// underlying reader when its Close method is called.
-//
-// MaxBytesReader prevents clients from accidentally or maliciously
-// sending a large request and wasting server resources.
-func MaxBytesReader(w ResponseWriter, r io.ReadCloser, n int64) io.ReadCloser {
-	return &maxBytesReader{w: w, r: r, n: n}
-}
-
-type maxBytesReader struct {
-	w   ResponseWriter
-	r   io.ReadCloser // underlying reader
-	n   int64         // max bytes remaining
-	err error         // sticky error
-}
-
-func (l *maxBytesReader) Read(p []byte) (n int, err error) {
-	if l.err != nil {
-		return 0, l.err
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	// If they asked for a 32KB byte read but only 5 bytes are
-	// remaining, no need to read 32KB. 6 bytes will answer the
-	// question of the whether we hit the limit or go past it.
-	if int64(len(p)) > l.n+1 {
-		p = p[:l.n+1]
-	}
-	n, err = l.r.Read(p)
-
-	if int64(n) <= l.n {
-		l.n -= int64(n)
-		l.err = err
-		return n, err
-	}
-
-	n = int(l.n)
-	l.n = 0
-
-	// The server code and client code both use
-	// maxBytesReader. This "requestTooLarge" check is
-	// only used by the server code. To prevent binaries
-	// which only using the HTTP Client code (such as
-	// cmd/go) from also linking in the HTTP server, don't
-	// use a static type assertion to the server
-	// "*response" type. Check this interface instead:
-	type requestTooLarger interface {
-		requestTooLarge()
-	}
-	if res, ok := l.w.(requestTooLarger); ok {
-		res.requestTooLarge()
-	}
-	l.err = errors.New("http: request body too large")
-	return n, l.err
-}
-
-func (l *maxBytesReader) Close() error {
-	return l.r.Close()
 }
 
 func copyValues(dst, src url.Values) {
@@ -971,202 +814,6 @@ func copyValues(dst, src url.Values) {
 			dst.Add(k, value)
 		}
 	}
-}
-
-func parsePostForm(r *Request) (vs url.Values, err error) {
-	if r.Body == nil {
-		err = errors.New("missing form body")
-		return
-	}
-	ct := r.Header.Get("Content-Type")
-	// RFC 2616, section 7.2.1 - empty type
-	//   SHOULD be treated as application/octet-stream
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	ct, _, err = mime.ParseMediaType(ct)
-	switch {
-	case ct == "application/x-www-form-urlencoded":
-		var reader io.Reader = r.Body
-		maxFormSize := int64(1<<63 - 1)
-		if _, ok := r.Body.(*maxBytesReader); !ok {
-			maxFormSize = int64(10 << 20) // 10 MB is a lot of text.
-			reader = io.LimitReader(r.Body, maxFormSize+1)
-		}
-		b, e := ioutil.ReadAll(reader)
-		if e != nil {
-			if err == nil {
-				err = e
-			}
-			break
-		}
-		if int64(len(b)) > maxFormSize {
-			err = errors.New("http: POST too large")
-			return
-		}
-		vs, e = url.ParseQuery(string(b))
-		if err == nil {
-			err = e
-		}
-	case ct == "multipart/form-data":
-		// handled by ParseMultipartForm (which is calling us, or should be)
-		// TODO(bradfitz): there are too many possible
-		// orders to call too many functions here.
-		// Clean this up and write more tests.
-		// request_test.go contains the start of this,
-		// in TestParseMultipartFormOrder and others.
-	}
-	return
-}
-
-// ParseForm populates r.Form and r.PostForm.
-//
-// For all requests, ParseForm parses the raw query from the URL and updates
-// r.Form.
-//
-// For POST, PUT, and PATCH requests, it also parses the request body as a form
-// and puts the results into both r.PostForm and r.Form. Request body parameters
-// take precedence over URL query string values in r.Form.
-//
-// For other HTTP methods, or when the Content-Type is not
-// application/x-www-form-urlencoded, the request Body is not read, and
-// r.PostForm is initialized to a non-nil, empty value.
-//
-// If the request Body's size has not already been limited by MaxBytesReader,
-// the size is capped at 10MB.
-//
-// ParseMultipartForm calls ParseForm automatically.
-// ParseForm is idempotent.
-func (r *Request) ParseForm() error {
-	var err error
-	if r.PostForm == nil {
-		if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
-			r.PostForm, err = parsePostForm(r)
-		}
-		if r.PostForm == nil {
-			r.PostForm = make(url.Values)
-		}
-	}
-	if r.Form == nil {
-		if len(r.PostForm) > 0 {
-			r.Form = make(url.Values)
-			copyValues(r.Form, r.PostForm)
-		}
-		var newValues url.Values
-		if r.URL != nil {
-			var e error
-			newValues, e = url.ParseQuery(r.URL.RawQuery)
-			if err == nil {
-				err = e
-			}
-		}
-		if newValues == nil {
-			newValues = make(url.Values)
-		}
-		if r.Form == nil {
-			r.Form = newValues
-		} else {
-			copyValues(r.Form, newValues)
-		}
-	}
-	return err
-}
-
-// ParseMultipartForm parses a request body as multipart/form-data.
-// The whole request body is parsed and up to a total of maxMemory bytes of
-// its file parts are stored in memory, with the remainder stored on
-// disk in temporary files.
-// ParseMultipartForm calls ParseForm if necessary.
-// After one call to ParseMultipartForm, subsequent calls have no effect.
-func (r *Request) ParseMultipartForm(maxMemory int64) error {
-	if r.MultipartForm == multipartByReader {
-		return errors.New("http: multipart handled by MultipartReader")
-	}
-	if r.Form == nil {
-		err := r.ParseForm()
-		if err != nil {
-			return err
-		}
-	}
-	if r.MultipartForm != nil {
-		return nil
-	}
-
-	mr, err := r.multipartReader()
-	if err != nil {
-		return err
-	}
-
-	f, err := mr.ReadForm(maxMemory)
-	if err != nil {
-		return err
-	}
-
-	if r.PostForm == nil {
-		r.PostForm = make(url.Values)
-	}
-	for k, v := range f.Value {
-		r.Form[k] = append(r.Form[k], v...)
-		// r.PostForm should also be populated. See Issue 9305.
-		r.PostForm[k] = append(r.PostForm[k], v...)
-	}
-
-	r.MultipartForm = f
-
-	return nil
-}
-
-// FormValue returns the first value for the named component of the query.
-// POST and PUT body parameters take precedence over URL query string values.
-// FormValue calls ParseMultipartForm and ParseForm if necessary and ignores
-// any errors returned by these functions.
-// If key is not present, FormValue returns the empty string.
-// To access multiple values of the same key, call ParseForm and
-// then inspect Request.Form directly.
-func (r *Request) FormValue(key string) string {
-	if r.Form == nil {
-		r.ParseMultipartForm(defaultMaxMemory)
-	}
-	if vs := r.Form[key]; len(vs) > 0 {
-		return vs[0]
-	}
-	return ""
-}
-
-// PostFormValue returns the first value for the named component of the POST
-// or PUT request body. URL query parameters are ignored.
-// PostFormValue calls ParseMultipartForm and ParseForm if necessary and ignores
-// any errors returned by these functions.
-// If key is not present, PostFormValue returns the empty string.
-func (r *Request) PostFormValue(key string) string {
-	if r.PostForm == nil {
-		r.ParseMultipartForm(defaultMaxMemory)
-	}
-	if vs := r.PostForm[key]; len(vs) > 0 {
-		return vs[0]
-	}
-	return ""
-}
-
-// FormFile returns the first file for the provided form key.
-// FormFile calls ParseMultipartForm and ParseForm if necessary.
-func (r *Request) FormFile(key string) (multipart.File, *multipart.FileHeader, error) {
-	if r.MultipartForm == multipartByReader {
-		return nil, nil, errors.New("http: multipart handled by MultipartReader")
-	}
-	if r.MultipartForm == nil {
-		err := r.ParseMultipartForm(defaultMaxMemory)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	if r.MultipartForm != nil && r.MultipartForm.File != nil {
-		if fhs := r.MultipartForm.File[key]; len(fhs) > 0 {
-			f, err := fhs[0].Open()
-			return f, fhs[0], err
-		}
-	}
-	return nil, nil, ErrMissingFile
 }
 
 func (r *Request) expectsContinue() bool {
