@@ -14,22 +14,10 @@ import (
 	"sync/atomic"
 )
 
-// A Server defines parameters for running an HTTP server.
-// The zero value for Server is a valid configuration.
 type Server struct {
-	Port    uint16
-	Handler Handler // handler to invoke, http.DefaultServeMux if nil
-
+	Port     uint16
+	Handler  Handler
 	ErrorLog *log.Logger
-
-	inShutdown    int32     // accessed atomically (non-zero means we're in Shutdown)
-	nextProtoOnce sync.Once // guards setupHTTP2_* init
-	nextProtoErr  error     // result of http2.ConfigureServer if used
-
-	mu         sync.Mutex
-	listeners  map[net.Listener]struct{}
-	activeConn map[*conn]struct{}
-	doneChan   chan struct{}
 }
 
 func ListenAndServe(port uint16, handler Handler) error {
