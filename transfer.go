@@ -23,10 +23,6 @@ import (
 	"github.com/disiqueira/StaticServer/internal"
 )
 
-// ErrLineTooLong is returned when reading request or response bodies
-// with malformed chunked encoding.
-var ErrLineTooLong = internal.ErrLineTooLong
-
 type errorReader struct {
 	err error
 }

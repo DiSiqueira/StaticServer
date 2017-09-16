@@ -6,20 +6,10 @@ package main
 
 import (
 	"io"
-	"strings"
-	"time"
 	"unicode/utf8"
 
 	"golang.org/x/net/lex/httplex"
 )
-
-// maxInt64 is the effective "infinite" value for the Server and
-// Transport's byte-limiting readers.
-const maxInt64 = 1<<63 - 1
-
-// aLongTimeAgo is a non-zero time, far in the past, used for
-// immediate cancelation of network operations.
-var aLongTimeAgo = time.Unix(1, 0)
 
 // TODO(bradfitz): move common stuff here. The other files have accumulated
 // generic http stuff in random places.
@@ -29,12 +19,6 @@ var aLongTimeAgo = time.Unix(1, 0)
 type contextKey struct {
 	name string
 }
-
-func (k *contextKey) String() string { return "net/http context value " + k.name }
-
-// Given a string of the form "host", "host:port", or "[ipv6::address]:port",
-// return true if the string includes a port.
-func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
 
 func isNotToken(r rune) bool {
 	return !httplex.IsTokenRune(r)
