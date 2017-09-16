@@ -45,21 +45,6 @@ var (
 	// ErrUnexpectedTrailer is returned by the Transport when a server
 	// replies with a Trailer header, but without a chunked reply.
 	ErrUnexpectedTrailer = &ProtocolError{"trailer header without chunked transfer encoding"}
-
-	// ErrMissingBoundary is returned by Request.MultipartReader when the
-	// request's Content-Type does not include a "boundary" parameter.
-	ErrMissingBoundary = &ProtocolError{"no multipart boundary param in Content-Type"}
-
-	// ErrNotMultipart is returned by Request.MultipartReader when the
-	// request's Content-Type is not multipart/form-data.
-	ErrNotMultipart = &ProtocolError{"request Content-Type isn't multipart/form-data"}
-
-	// Deprecated: ErrHeaderTooLong is not used.
-	ErrHeaderTooLong = &ProtocolError{"header too long"}
-	// Deprecated: ErrShortBody is not used.
-	ErrShortBody = &ProtocolError{"entity body too short"}
-	// Deprecated: ErrMissingContentLength is not used.
-	ErrMissingContentLength = &ProtocolError{"missing ContentLength in HEAD response"}
 )
 
 type badStringError struct {
@@ -68,15 +53,6 @@ type badStringError struct {
 }
 
 func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.str) }
-
-// Headers that Request.Write handles itself and should be skipped.
-var reqWriteExcludeHeader = map[string]bool{
-	"Host":              true, // not in Header map anyway
-	"User-Agent":        true,
-	"Content-Length":    true,
-	"Transfer-Encoding": true,
-	"Trailer":           true,
-}
 
 // A Request represents an HTTP request received by a server
 // or to be sent by a client.
@@ -374,10 +350,6 @@ func ParseHTTPVersion(vers string) (major, minor int, ok bool) {
 		return 0, 0, false
 	}
 	return major, minor, true
-}
-
-func (r *Request) expectsContinue() bool {
-	return hasToken(r.Header.get("Expect"), "100-continue")
 }
 
 func (r *Request) closeBody() {

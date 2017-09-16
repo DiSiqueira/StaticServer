@@ -11,12 +11,6 @@ import (
 	"io"
 )
 
-var respExcludeHeader = map[string]bool{
-	"Content-Length":    true,
-	"Transfer-Encoding": true,
-	"Trailer":           true,
-}
-
 // Response represents the response from an HTTP request.
 //
 type Response struct {
