@@ -396,18 +396,6 @@ func (r *Request) isReplayable() bool {
 	return false
 }
 
-// outgoingLength reports the Content-Length of this outgoing (Client) request.
-// It maps 0 into -1 (unknown) when the Body is non-nil.
-func (r *Request) outgoingLength() int64 {
-	if r.Body == nil || r.Body == NoBody {
-		return 0
-	}
-	if r.ContentLength != 0 {
-		return r.ContentLength
-	}
-	return -1
-}
-
 // requestMethodUsuallyLacksBody reports whether the given request
 // method is one that typically does not involve a request body.
 // This is used by the Transport (via
