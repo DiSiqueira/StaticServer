@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/textproto"
 	"os"
@@ -746,7 +745,6 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	cw.wroteHeader = true
 
 	w := cw.res
-	keepAlivesEnabled := w.conn.server.doKeepAlives()
 
 	// header is written out to w.conn.buf below. Depending on the
 	// state of the handler, we either own the map or not. If we
@@ -812,30 +810,10 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		setHeader.contentLength = strconv.AppendInt(cw.res.clenBuf[:0], int64(len(p)), 10)
 	}
 
-	// If this was an HTTP/1.0 request with keep-alive and we sent a
-	// Content-Length back, we can make this a keep-alive response ...
-	if w.wants10KeepAlive && keepAlivesEnabled {
-		sentLength := header.get("Content-Length") != ""
-		if sentLength && header.get("Connection") == "keep-alive" {
-			w.closeAfterReply = false
-		}
-	}
-
 	// Check for a explicit (and valid) Content-Length header.
 	hasCL := w.contentLength != -1
 
-	if w.wants10KeepAlive && (hasCL || !bodyAllowedForStatus(w.status)) {
-		_, connectionHeaderSet := header["Connection"]
-		if !connectionHeaderSet {
-			setHeader.connection = "keep-alive"
-		}
-	} else if w.wantsClose {
-		w.closeAfterReply = true
-	}
-
-	if header.get("Connection") == "close" || !keepAlivesEnabled {
-		w.closeAfterReply = true
-	}
+	w.closeAfterReply = true
 
 	code := w.status
 	if bodyAllowedForStatus(code) {
@@ -1255,44 +1233,8 @@ func (c ConnState) String() string {
 	return stateName[c]
 }
 
-func (s *Server) doKeepAlives() bool {
-	return atomic.LoadInt32(&s.disableKeepAlives) == 0 && !s.shuttingDown()
-}
-
 func (s *Server) shuttingDown() bool {
 	return atomic.LoadInt32(&s.inShutdown) != 0
-}
-
-// SetKeepAlivesEnabled controls whether HTTP keep-alives are enabled.
-// By default, keep-alives are always enabled. Only very
-// resource-constrained environments or servers in the process of
-// shutting down should disable them.
-func (srv *Server) SetKeepAlivesEnabled(v bool) {
-	if v {
-		atomic.StoreInt32(&srv.disableKeepAlives, 0)
-		return
-	}
-	atomic.StoreInt32(&srv.disableKeepAlives, 1)
-
-	// Close idle HTTP/1 conns:
-	srv.closeIdleConns()
-
-	// Close HTTP/2 conns, as soon as they become idle, but reset
-	// the chan so future conns (if the listener is still active)
-	// still work and don't get a GOAWAY immediately, before their
-	// first request:
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	srv.closeDoneChanLocked() // closes http2 conns
-	srv.doneChan = nil
-}
-
-func (s *Server) logf(format string, args ...interface{}) {
-	if s.ErrorLog != nil {
-		s.ErrorLog.Printf(format, args...)
-	} else {
-		log.Printf(format, args...)
-	}
 }
 
 // ErrHandlerTimeout is returned on ResponseWriter Write calls
