@@ -27,27 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/net/lex/httplex"
 )
-
-// DefaultTransport is the default implementation of Transport and is
-// used by DefaultClient. It establishes network connections as needed
-// and caches them for reuse by subsequent calls. It uses HTTP proxies
-// as directed by the $HTTP_PROXY and $NO_PROXY (or $http_proxy and
-// $no_proxy) environment variables.
-var DefaultTransport RoundTripper = &Transport{
-	Proxy: ProxyFromEnvironment,
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		DualStack: true,
-	}).DialContext,
-	MaxIdleConns:          100,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: 1 * time.Second,
-}
 
 // DefaultMaxIdleConnsPerHost is the default value of Transport's
 // MaxIdleConnsPerHost.
@@ -194,51 +174,8 @@ type Transport struct {
 	// nextProtoOnce guards initialization of TLSNextProto and
 	// h2transport (via onceSetNextProtoDefaults)
 	nextProtoOnce sync.Once
-	h2transport   *http2Transport // non-nil if http2 wired up
 
 	// TODO: tunable on max per-host TCP dials in flight (Issue 13957)
-}
-
-// onceSetNextProtoDefaults initializes TLSNextProto.
-// It must be called via t.nextProtoOnce.Do.
-func (t *Transport) onceSetNextProtoDefaults() {
-	if strings.Contains(os.Getenv("GODEBUG"), "http2client=0") {
-		return
-	}
-	if t.TLSNextProto != nil {
-		// This is the documented way to disable http2 on a
-		// Transport.
-		return
-	}
-	if t.TLSClientConfig != nil || t.Dial != nil || t.DialTLS != nil {
-		// Be conservative and don't automatically enable
-		// http2 if they've specified a custom TLS config or
-		// custom dialers. Let them opt-in themselves via
-		// http2.ConfigureTransport so we don't surprise them
-		// by modifying their tls.Config. Issue 14275.
-		return
-	}
-	t2, err := http2configureTransport(t)
-	if err != nil {
-		log.Printf("Error enabling Transport HTTP/2 support: %v", err)
-		return
-	}
-	t.h2transport = t2
-
-	// Auto-configure the http2.Transport's MaxHeaderListSize from
-	// the http.Transport's MaxResponseHeaderBytes. They don't
-	// exactly mean the same thing, but they're close.
-	//
-	// TODO: also add this to x/net/http2.Configure Transport, behind
-	// a +build go1.7 build tag:
-	if limit1 := t.MaxResponseHeaderBytes; limit1 != 0 && t2.MaxHeaderListSize == 0 {
-		const h2max = 1<<32 - 1
-		if limit1 >= h2max {
-			t2.MaxHeaderListSize = h2max
-		} else {
-			t2.MaxHeaderListSize = uint32(limit1)
-		}
-	}
 }
 
 // ProxyFromEnvironment returns the URL of the proxy to use for a
@@ -304,148 +241,6 @@ func (tr *transportRequest) extraHeaders() Header {
 	return tr.extra
 }
 
-// RoundTrip implements the RoundTripper interface.
-//
-// For higher-level HTTP client support (such as handling of cookies
-// and redirects), see Get, Post, and the Client type.
-func (t *Transport) RoundTrip(req *Request) (*Response, error) {
-	t.nextProtoOnce.Do(t.onceSetNextProtoDefaults)
-	ctx := req.Context()
-	trace := httptrace.ContextClientTrace(ctx)
-
-	if req.URL == nil {
-		req.closeBody()
-		return nil, errors.New("http: nil Request.URL")
-	}
-	if req.Header == nil {
-		req.closeBody()
-		return nil, errors.New("http: nil Request.Header")
-	}
-	scheme := req.URL.Scheme
-	isHTTP := scheme == "http" || scheme == "https"
-	if isHTTP {
-		for k, vv := range req.Header {
-			if !httplex.ValidHeaderFieldName(k) {
-				return nil, fmt.Errorf("net/http: invalid header field name %q", k)
-			}
-			for _, v := range vv {
-				if !httplex.ValidHeaderFieldValue(v) {
-					return nil, fmt.Errorf("net/http: invalid header field value %q for key %v", v, k)
-				}
-			}
-		}
-	}
-
-	altProto, _ := t.altProto.Load().(map[string]RoundTripper)
-	if altRT := altProto[scheme]; altRT != nil {
-		if resp, err := altRT.RoundTrip(req); err != ErrSkipAltProtocol {
-			return resp, err
-		}
-	}
-	if !isHTTP {
-		req.closeBody()
-		return nil, &badStringError{"unsupported protocol scheme", scheme}
-	}
-	if req.Method != "" && !validMethod(req.Method) {
-		return nil, fmt.Errorf("net/http: invalid method %q", req.Method)
-	}
-	if req.URL.Host == "" {
-		req.closeBody()
-		return nil, errors.New("http: no Host in request URL")
-	}
-
-	for {
-		// treq gets modified by roundTrip, so we need to recreate for each retry.
-		treq := &transportRequest{Request: req, trace: trace}
-		cm, err := t.connectMethodForRequest(treq)
-		if err != nil {
-			req.closeBody()
-			return nil, err
-		}
-
-		// Get the cached or newly-created connection to either the
-		// host (for http or https), the http proxy, or the http proxy
-		// pre-CONNECTed to https server. In any case, we'll be ready
-		// to send it requests.
-		pconn, err := t.getConn(treq, cm)
-		if err != nil {
-			t.setReqCanceler(req, nil)
-			req.closeBody()
-			return nil, err
-		}
-
-		var resp *Response
-		if pconn.alt != nil {
-			// HTTP/2 path.
-			t.setReqCanceler(req, nil) // not cancelable with CancelRequest
-			resp, err = pconn.alt.RoundTrip(req)
-		} else {
-			resp, err = pconn.roundTrip(treq)
-		}
-		if err == nil {
-			return resp, nil
-		}
-		if !pconn.shouldRetryRequest(req, err) {
-			// Issue 16465: return underlying net.Conn.Read error from peek,
-			// as we've historically done.
-			if e, ok := err.(transportReadFromServerError); ok {
-				err = e.err
-			}
-			return nil, err
-		}
-		testHookRoundTripRetried()
-	}
-}
-
-// shouldRetryRequest reports whether we should retry sending a failed
-// HTTP request on a new connection. The non-nil input error is the
-// error from roundTrip.
-func (pc *persistConn) shouldRetryRequest(req *Request, err error) bool {
-	if err == http2ErrNoCachedConn {
-		// Issue 16582: if the user started a bunch of
-		// requests at once, they can all pick the same conn
-		// and violate the server's max concurrent streams.
-		// Instead, match the HTTP/1 behavior for now and dial
-		// again to get a new TCP connection, rather than failing
-		// this request.
-		return true
-	}
-	if err == errMissingHost {
-		// User error.
-		return false
-	}
-	if !pc.isReused() {
-		// This was a fresh connection. There's no reason the server
-		// should've hung up on us.
-		//
-		// Also, if we retried now, we could loop forever
-		// creating new connections and retrying if the server
-		// is just hanging up on us because it doesn't like
-		// our request (as opposed to sending an error).
-		return false
-	}
-	if _, ok := err.(nothingWrittenError); ok {
-		// We never wrote anything, so it's safe to retry.
-		return true
-	}
-	if !req.isReplayable() {
-		// Don't retry non-idempotent requests.
-		return false
-	}
-	if _, ok := err.(transportReadFromServerError); ok {
-		// We got some non-EOF net.Conn.Read failure reading
-		// the 1st response byte from the server.
-		return true
-	}
-	if err == errServerClosedIdle {
-		// The server replied with io.EOF while we were trying to
-		// read the response. Probably an unfortunately keep-alive
-		// timeout, just as the client was writing a request.
-		return true
-	}
-	return false // conservatively
-}
-
 // ErrSkipAltProtocol is a sentinel error value defined by Transport.RegisterProtocol.
 var ErrSkipAltProtocol = errors.New("net/http: skip alternate protocol")
 
@@ -472,29 +267,6 @@ func (t *Transport) RegisterProtocol(scheme string, rt RoundTripper) {
 	}
 	newMap[scheme] = rt
 	t.altProto.Store(newMap)
-}
-
-// CloseIdleConnections closes any connections which were previously
-// connected from previous requests but are now sitting idle in
-// a "keep-alive" state. It does not interrupt any connections currently
-// in use.
-func (t *Transport) CloseIdleConnections() {
-	t.nextProtoOnce.Do(t.onceSetNextProtoDefaults)
-	t.idleMu.Lock()
-	m := t.idleConn
-	t.idleConn = nil
-	t.idleConnCh = nil
-	t.wantIdle = true
-	t.idleLRU = connLRU{}
-	t.idleMu.Unlock()
-	for _, conns := range m {
-		for _, pconn := range conns {
-			pconn.close(errCloseIdleConns)
-		}
-	}
-	if t2 := t.h2transport; t2 != nil {
-		t2.CloseIdleConnections()
-	}
 }
 
 // CancelRequest cancels an in-flight request by closing its connection.
@@ -1433,16 +1205,6 @@ func (pc *persistConn) readLoop() {
 				err = fmt.Errorf("net/http: server response headers exceeded %d bytes; aborted", pc.maxHeaderResponseSize())
 			}
 
-			// If we won't be able to retry this request later (from the
-			// roundTrip goroutine), mark it as done now.
-			// BEFORE the send on rc.ch, as the client might re-use the
-			// same *Request pointer, and we don't want to set call
-			// t.setReqCanceler from this persistConn while the Transport
-			// potentially spins up a different persistConn for the
-			// caller's subsequent request.
-			if !pc.shouldRetryRequest(rc.req, err) {
-				pc.t.setReqCanceler(rc.req, nil)
-			}
 			select {
 			case rc.ch <- responseAndError{err: err}:
 			case <-rc.callerGone:
