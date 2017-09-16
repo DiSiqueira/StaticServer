@@ -10,11 +10,9 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net/textproto"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -106,25 +104,6 @@ type Response struct {
 	// The pointer is shared between responses and should not be
 	// modified.
 	TLS *tls.ConnectionState
-}
-
-// ErrNoLocation is returned by Response's Location method
-// when no Location header is present.
-var ErrNoLocation = errors.New("http: no Location header in response")
-
-// Location returns the URL of the response's "Location" header,
-// if present. Relative redirects are resolved relative to
-// the Response's Request. ErrNoLocation is returned if no
-// Location header is present.
-func (r *Response) Location() (*url.URL, error) {
-	lv := r.Header.Get("Location")
-	if lv == "" {
-		return nil, ErrNoLocation
-	}
-	if r.Request != nil && r.Request.URL != nil {
-		return r.Request.URL.Parse(lv)
-	}
-	return url.Parse(lv)
 }
 
 // ReadResponse reads and returns an HTTP response from r.
