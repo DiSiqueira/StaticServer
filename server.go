@@ -46,15 +46,14 @@ func (cw *chunkWriter) close() {
 }
 
 type response struct {
-	conn            *conn
-	req             *Request
-	w               *bufio.Writer
-	cw              chunkWriter
-	handlerHeader   Header
-	calledHeader    bool
-	written         int64
-	status          int
-	closeAfterReply bool
+	conn          *conn
+	req           *Request
+	w             *bufio.Writer
+	cw            chunkWriter
+	handlerHeader Header
+	calledHeader  bool
+	written       int64
+	status        int
 }
 
 type writerOnly struct {
@@ -184,17 +183,8 @@ func (w *response) WriteHeader(code int) {
 func (cw *chunkWriter) writeHeader(p []byte) {
 	w := cw.res
 
-	header := cw.header
-	owned := header != nil
-	if !owned {
-		header = w.handlerHeader
-	}
-	var excludeHeader map[string]bool
-
-	w.closeAfterReply = true
-
 	w.conn.bufw.WriteString(statusLine(w.status))
-	cw.header.WriteSubset(w.conn.bufw, excludeHeader)
+	cw.header.WriteSubset(w.conn.bufw)
 	w.conn.bufw.Write(crlf)
 }
 

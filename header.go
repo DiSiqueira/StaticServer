@@ -48,7 +48,7 @@ func (h Header) get(key string) string {
 
 // Write writes a header in wire format.
 func (h Header) Write(w io.Writer) error {
-	return h.WriteSubset(w, nil)
+	return h.WriteSubset(w)
 }
 
 func (h Header) clone() Header {
@@ -99,30 +99,26 @@ var headerSorterPool = sync.Pool{
 // sortedKeyValues returns h's keys sorted in the returned kvs
 // slice. The headerSorter used to sort is also returned, for possible
 // return to headerSorterCache.
-func (h Header) sortedKeyValues(exclude map[string]bool) (kvs []keyValues, hs *headerSorter) {
+func (h Header) sortedKeyValues() (kvs []keyValues, hs *headerSorter) {
 	hs = headerSorterPool.Get().(*headerSorter)
 	if cap(hs.kvs) < len(h) {
 		hs.kvs = make([]keyValues, 0, len(h))
 	}
 	kvs = hs.kvs[:0]
 	for k, vv := range h {
-		if !exclude[k] {
-			kvs = append(kvs, keyValues{k, vv})
-		}
+		kvs = append(kvs, keyValues{k, vv})
 	}
 	hs.kvs = kvs
 	sort.Sort(hs)
 	return kvs, hs
 }
 
-// WriteSubset writes a header in wire format.
-// If exclude is not nil, keys where exclude[key] == true are not written.
-func (h Header) WriteSubset(w io.Writer, exclude map[string]bool) error {
+func (h Header) WriteSubset(w io.Writer) error {
 	ws, ok := w.(writeStringer)
 	if !ok {
 		ws = stringWriter{w}
 	}
-	kvs, sorter := h.sortedKeyValues(exclude)
+	kvs, sorter := h.sortedKeyValues()
 	for _, kv := range kvs {
 		for _, v := range kv.values {
 			v = headerNewlineToSpace.Replace(v)
