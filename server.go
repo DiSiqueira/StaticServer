@@ -30,7 +30,6 @@ type chunkWriter struct {
 	res         *response
 	header      Header
 	wroteHeader bool
-	chunking    bool
 }
 
 var (
@@ -41,17 +40,7 @@ func (cw *chunkWriter) Write(p []byte) (n int, err error) {
 	if !cw.wroteHeader {
 		cw.writeHeader(p)
 	}
-	if cw.chunking {
-		_, err = fmt.Fprintf(cw.res.conn.bufw, "%x\r\n", len(p))
-		if err != nil {
-			cw.res.conn.rwc.Close()
-			return
-		}
-	}
 	n, err = cw.res.conn.bufw.Write(p)
-	if cw.chunking && err == nil {
-		_, err = cw.res.conn.bufw.Write(crlf)
-	}
 	if err != nil {
 		cw.res.conn.rwc.Close()
 	}
@@ -68,13 +57,6 @@ func (cw *chunkWriter) flush() {
 func (cw *chunkWriter) close() {
 	if !cw.wroteHeader {
 		cw.writeHeader(nil)
-	}
-	if cw.chunking {
-		bw := cw.res.conn.bufw
-
-		bw.WriteString("0\r\n")
-
-		bw.WriteString("\r\n")
 	}
 }
 
@@ -131,15 +113,9 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 	w.w.Flush()
 	w.cw.flush()
 
-	if !w.cw.chunking {
-		n0, err := rf.ReadFrom(src)
-		n += n0
-		w.written += n0
-		return n, err
-	}
-
-	n0, err := io.Copy(writerOnly{w}, src)
+	n0, err := rf.ReadFrom(src)
 	n += n0
+	w.written += n0
 	return n, err
 }
 
