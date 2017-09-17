@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,8 +11,7 @@ import (
 )
 
 var (
-	ErrContentLength = errors.New("http: wrote more than the declared Content-Length")
-	crlf             = []byte("\r\n")
+	crlf = []byte("\r\n")
 )
 
 type Handler interface {
@@ -67,7 +65,6 @@ type response struct {
 	written             int64
 	status              int
 	closeAfterReply     bool
-	requestBodyLimitHit bool
 }
 
 type writerOnly struct {
