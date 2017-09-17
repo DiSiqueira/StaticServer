@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -51,7 +52,10 @@ func (srv *Server) Serve(l net.Listener) error {
 			return e
 		}
 		c := srv.newConn(rw)
-		go c.serve()
+		go func() {
+			c.serve()
+			c.rwc.Close()
+		}()
 	}
 }
 
@@ -75,17 +79,15 @@ func (c *conn) serve() {
 	c.bufr = newBufioReader(c.r)
 	c.bufw = newBufioWriterSize(c.rwc, 4<<10)
 
-	for {
-		w, err := c.readRequest()
-		if err != nil {
-			return
-		}
-
-		c.server.Handler.ServeHTTP(w, w.req)
-
-		w.finishRequest()
+	w, err := c.readRequest()
+	if err != nil {
 		return
 	}
+
+	c.server.Handler.ServeHTTP(w, w.req)
+
+	w.finishRequest()
+	return
 }
 
 func (c *conn) readRequest() (w *response, err error) {
@@ -160,6 +162,9 @@ func (w *response) finishRequest() {
 	w.w.Flush()
 	putBufioWriter(w.w)
 	w.cw.close()
+
+	w.conn.r.conn.rwc.SetReadDeadline(time.Unix(1, 0))
+
 }
 
 func putBufioWriter(bw *bufio.Writer) {
