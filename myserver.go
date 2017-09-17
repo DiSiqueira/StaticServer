@@ -125,6 +125,19 @@ func readRequest(b *bufio.Reader) (req *Request, err error) {
 	return req, nil
 }
 
+type badStringError struct {
+	what string
+	str  string
+}
+
+func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.str) }
+
+type Request struct {
+	Method     string
+	URL        *url.URL
+	RequestURI string
+}
+
 // parseRequestLine parses "GET /foo HTTP/1.1" into its three parts.
 func parseRequestLine(line string) (requestURI string, ok bool) {
 	s1 := strings.Index(line, " ")
