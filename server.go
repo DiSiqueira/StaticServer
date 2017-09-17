@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -82,11 +81,7 @@ func (cw *chunkWriter) close() {
 type response struct {
 	conn                *conn
 	req                 *Request
-	cancelCtx           context.CancelFunc
 	wroteHeader         bool
-	wroteContinue       bool
-	wants10KeepAlive    bool
-	wantsClose          bool
 	w                   *bufio.Writer
 	cw                  chunkWriter
 	handlerHeader       Header
@@ -97,8 +92,6 @@ type response struct {
 	closeAfterReply     bool
 	requestBodyLimitHit bool
 }
-
-type atomicBool int32
 
 type writerOnly struct {
 	io.Writer
@@ -148,12 +141,6 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 	n0, err := io.Copy(writerOnly{w}, src)
 	n += n0
 	return n, err
-}
-
-type readResult struct {
-	n   int
-	err error
-	b   byte
 }
 
 type connReader struct {
