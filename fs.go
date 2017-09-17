@@ -78,6 +78,7 @@ func (f *fileServer) ServeHTTP(w ResponseWriter, r *Request) {
 	code := StatusOK
 
 	w.Header().Set("Content-Type", string(urlFile.ContentType()))
+	w.Header().Set("Server", "DStaticServer 0.1")
 
 	sendSize := d.Size()
 	w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))

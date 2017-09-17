@@ -142,12 +142,3 @@ func (h Header) WriteSubset(w io.Writer, exclude map[string]bool) error {
 	headerSorterPool.Put(sorter)
 	return nil
 }
-
-// CanonicalHeaderKey returns the canonical format of the
-// header key s. The canonicalization converts the first
-// letter and any letter following a hyphen to upper case;
-// the rest are converted to lowercase. For example, the
-// canonical key for "accept-encoding" is "Accept-Encoding".
-// If s contains a space or invalid header field bytes, it is
-// returned without modifications.
-func CanonicalHeaderKey(s string) string { return textproto.CanonicalMIMEHeaderKey(s) }

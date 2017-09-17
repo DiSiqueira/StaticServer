@@ -12,7 +12,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/textproto"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,27 +209,6 @@ func (t *transferWriter) WriteHeader(w io.Writer) error {
 		}
 	}
 
-	// Write Trailer header
-	if t.Trailer != nil {
-		keys := make([]string, 0, len(t.Trailer))
-		for k := range t.Trailer {
-			k = CanonicalHeaderKey(k)
-			switch k {
-			case "Transfer-Encoding", "Trailer", "Content-Length":
-				return &badStringError{"invalid Trailer key", k}
-			}
-			keys = append(keys, k)
-		}
-		if len(keys) > 0 {
-			sort.Strings(keys)
-			// TODO: could do better allocation-wise here, but trailers are rare,
-			// so being lazy for now.
-			if _, err := io.WriteString(w, "Trailer: "+strings.Join(keys, ",")+"\r\n"); err != nil {
-				return err
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -319,22 +297,6 @@ func bodyAllowedForStatus(status int) bool {
 		return false
 	}
 	return true
-}
-
-var (
-	suppressedHeaders304    = []string{"Content-Type", "Content-Length", "Transfer-Encoding"}
-	suppressedHeadersNoBody = []string{"Content-Length", "Transfer-Encoding"}
-)
-
-func suppressedHeaders(status int) []string {
-	switch {
-	case status == 304:
-		// RFC 2616 section 10.3.5: "the response MUST NOT include other entity-headers"
-		return suppressedHeaders304
-	case !bodyAllowedForStatus(status):
-		return suppressedHeadersNoBody
-	}
-	return nil
 }
 
 // Checks whether chunked is part of the encodings stack
@@ -502,42 +464,6 @@ func shouldClose(major, minor int, header Header, removeCloseHeader bool) bool {
 	}
 
 	return hasClose
-}
-
-// Parse the trailer header
-func fixTrailer(header Header, te []string) (Header, error) {
-	vv, ok := header["Trailer"]
-	if !ok {
-		return nil, nil
-	}
-	header.Del("Trailer")
-
-	trailer := make(Header)
-	var err error
-	for _, v := range vv {
-		foreachHeaderElement(v, func(key string) {
-			key = CanonicalHeaderKey(key)
-			switch key {
-			case "Transfer-Encoding", "Trailer", "Content-Length":
-				if err == nil {
-					err = &badStringError{"bad trailer key", key}
-					return
-				}
-			}
-			trailer[key] = nil
-		})
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(trailer) == 0 {
-		return nil, nil
-	}
-	if !chunked(te) {
-		// Trailer and no chunking
-		return nil, ErrUnexpectedTrailer
-	}
-	return trailer, nil
 }
 
 // body turns a Reader into a ReadCloser.

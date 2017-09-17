@@ -263,9 +263,6 @@ func (cw *chunkWriter) close() {
 		bw := cw.res.conn.bufw // conn's bufio writer
 		// zero chunk to mark EOF
 		bw.WriteString("0\r\n")
-		if trailers := cw.res.finalTrailers(); trailers != nil {
-			trailers.Write(bw) // the writer handles noting errors
-		}
 		// final blank line after the trailers (whether
 		// present or not)
 		bw.WriteString("\r\n")
@@ -310,79 +307,11 @@ type response struct {
 	// subsequent requests on this connection and stop reading
 	// input from it.
 	requestBodyLimitHit bool
-
-	// trailers are the headers to be sent after the handler
-	// finishes writing the body. This field is initialized from
-	// the Trailer response header when the response header is
-	// written.
-	trailers []string
-
-	handlerDone atomicBool // set true when the handler exits
-
-	// Buffers for Date and Content-Length
-	dateBuf [len(TimeFormat)]byte
-	clenBuf [10]byte
-
-	// closeNotifyCh is the channel returned by CloseNotify.
-	// TODO(bradfitz): this is currently (for Go 1.8) always
-	// non-nil. Make this lazily-created again as it used to be?
-	closeNotifyCh  chan bool
-	didCloseNotify int32 // atomic (only 0->1 winner should send)
-}
-
-// TrailerPrefix is a magic prefix for ResponseWriter.Header map keys
-// that, if present, signals that the map entry is actually for
-// the response trailers, and not the response headers. The prefix
-// is stripped after the ServeHTTP call finishes and the values are
-// sent in the trailers.
-//
-// This mechanism is intended only for trailers that are not known
-// prior to the headers being written. If the set of trailers is fixed
-// or known before the header is written, the normal Go trailers mechanism
-// is preferred:
-//    https://golang.org/pkg/net/http/#ResponseWriter
-//    https://golang.org/pkg/net/http/#example_ResponseWriter_trailers
-const TrailerPrefix = "Trailer:"
-
-// finalTrailers is called after the Handler exits and returns a non-nil
-// value if the Handler set any trailers.
-func (w *response) finalTrailers() Header {
-	var t Header
-	for k, vv := range w.handlerHeader {
-		if strings.HasPrefix(k, TrailerPrefix) {
-			if t == nil {
-				t = make(Header)
-			}
-			t[strings.TrimPrefix(k, TrailerPrefix)] = vv
-		}
-	}
-	for _, k := range w.trailers {
-		if t == nil {
-			t = make(Header)
-		}
-		for _, v := range w.handlerHeader[k] {
-			t.Add(k, v)
-		}
-	}
-	return t
 }
 
 type atomicBool int32
 
 func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
-
-// declareTrailer is called for each Trailer header when the
-// response header is written. It notes that a header will need to be
-// written in the trailers at the end of the response.
-func (w *response) declareTrailer(k string) {
-	k = CanonicalHeaderKey(k)
-	switch k {
-	case "Transfer-Encoding", "Content-Length", "Trailer":
-		// Forbidden by RFC 2616 14.40.
-		return
-	}
-	w.trailers = append(w.trailers, k)
-}
 
 // writerOnly hides an io.Writer value's optional ReadFrom method
 // from io.Copy.
@@ -518,8 +447,6 @@ func newBufioReader(r io.Reader) *bufio.Reader {
 		br.Reset(r)
 		return br
 	}
-	// Note: if this reader size is ever changed, update
-	// TestHandlerBodyClose's assumptions.
 	return bufio.NewReader(r)
 }
 
@@ -535,13 +462,8 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 	return bufio.NewWriterSize(w, size)
 }
 
-// DefaultMaxHeaderBytes is the maximum permitted size of the headers
-// in an HTTP request.
-// This can be overridden by setting Server.MaxHeaderBytes.
 const DefaultMaxHeaderBytes = 1 << 20 // 1 MB
 
-// wrapper around io.ReaderCloser which on first read, sends an
-// HTTP/1.1 100 Continue header
 type expectContinueReader struct {
 	resp       *response
 	readCloser io.ReadCloser
@@ -565,12 +487,6 @@ func (ecr *expectContinueReader) Close() error {
 	return ecr.readCloser.Close()
 }
 
-// TimeFormat is the time format to use when generating times in HTTP
-// headers. It is like time.RFC1123 but hard-codes GMT as the time
-// zone. The time being formatted must be in UTC for Format to
-// generate the correct format.
-//
-// For parsing this time format, see ParseTime.
 const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
 
 // Read next request from connection.
@@ -696,93 +612,11 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		header = w.handlerHeader
 	}
 	var excludeHeader map[string]bool
-	delHeader := func(key string) {
-		if owned {
-			header.Del(key)
-			return
-		}
-		if _, ok := header[key]; !ok {
-			return
-		}
-		if excludeHeader == nil {
-			excludeHeader = make(map[string]bool)
-		}
-		excludeHeader[key] = true
-	}
 	var setHeader extraHeader
-
-	// Don't write out the fake "Trailer:foo" keys. See TrailerPrefix.
-	trailers := false
-	for k := range cw.header {
-		if strings.HasPrefix(k, TrailerPrefix) {
-			if excludeHeader == nil {
-				excludeHeader = make(map[string]bool)
-			}
-			excludeHeader[k] = true
-			trailers = true
-		}
-	}
-	for _, v := range cw.header["Trailer"] {
-		trailers = true
-		foreachHeaderElement(v, cw.res.declareTrailer)
-	}
-
-	te := header.get("Transfer-Encoding")
-	hasTE := te != ""
-
-	// If the handler is done but never sent a Content-Length
-	// response header and this is our first (and last) write, set
-	// it, even to zero. This helps HTTP/1.0 clients keep their
-	// "keep-alive" connections alive.
-	// Exceptions: 304/204/1xx responses never get Content-Length, and if
-	// it was a HEAD request, we don't know the difference between
-	// 0 actual bytes and 0 bytes because the handler noticed it
-	// was a HEAD request and chose not to write anything. So for
-	// HEAD, the handler should either write the Content-Length or
-	// write non-zero bytes. If it's actually 0 bytes and the
-	// handler never looked at the Request.Method, we just don't
-	// send a Content-Length header.
-	// Further, we don't send an automatic Content-Length if they
-	// set a Transfer-Encoding, because they're generally incompatible.
-	if w.handlerDone.isSet() && !trailers && !hasTE && bodyAllowedForStatus(w.status) && header.get("Content-Length") == "" && (len(p) > 0) {
-		w.contentLength = int64(len(p))
-		setHeader.contentLength = strconv.AppendInt(cw.res.clenBuf[:0], int64(len(p)), 10)
-	}
-
-	// Check for a explicit (and valid) Content-Length header.
-	hasCL := w.contentLength != -1
 
 	w.closeAfterReply = true
 
-	code := w.status
-
-	if hasCL && hasTE && te != "identity" {
-		// TODO: return an error if WriteHeader gets a return parameter
-		// For now just ignore the Content-Length.
-		w.conn.server.logf("http: WriteHeader called with both Transfer-Encoding of %q and a Content-Length of %d",
-			te, w.contentLength)
-		delHeader("Content-Length")
-		hasCL = false
-	}
-
-	if code == StatusNoContent {
-		delHeader("Transfer-Encoding")
-	} else if hasCL {
-		delHeader("Transfer-Encoding")
-	} else {
-		// HTTP version < 1.1: cannot do chunked transfer
-		// encoding and we don't know the Content-Length so
-		// signal EOF by closing connection.
-		w.closeAfterReply = true
-		delHeader("Transfer-Encoding") // in case already set
-	}
-
-	// Cannot use Content-Length with non-identity Transfer-Encoding.
-	if cw.chunking {
-		delHeader("Content-Length")
-	}
-
-	w.conn.bufw.WriteString(statusLine(w.req, code))
+	w.conn.bufw.WriteString(statusLine(w.req, w.status))
 	cw.header.WriteSubset(w.conn.bufw, excludeHeader)
 	setHeader.Write(w.conn.bufw)
 	w.conn.bufw.Write(crlf)
@@ -938,21 +772,6 @@ var _ closeWriter = (*net.TCPConn)(nil)
 type badRequestError string
 
 func (e badRequestError) Error() string { return "Bad Request: " + string(e) }
-
-// ErrAbortHandler is a sentinel panic value to abort a handler.
-// While any panic from ServeHTTP aborts the response to the client,
-// panicking with ErrAbortHandler also suppresses logging of a stack
-// trace to the server's error log.
-var ErrAbortHandler = errors.New("net/http: abort Handler")
-
-// Serve a new connection.
-
-func (w *response) CloseNotify() <-chan bool {
-	if w.handlerDone.isSet() {
-		panic("net/http: CloseNotify called after ServeHTTP finished")
-	}
-	return w.closeNotifyCh
-}
 
 // The HandlerFunc type is an adapter to allow the use of
 // ordinary functions as HTTP handlers. If f is a function
