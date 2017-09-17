@@ -25,15 +25,11 @@ type ResponseWriter interface {
 }
 
 type chunkWriter struct {
-	res         *response
-	header      Header
-	wroteHeader bool
+	res    *response
+	header Header
 }
 
 func (cw *chunkWriter) Write(p []byte) (n int, err error) {
-	if !cw.wroteHeader {
-		cw.writeHeader(p)
-	}
 	n, err = cw.res.conn.bufw.Write(p)
 	if err != nil {
 		cw.res.conn.rwc.Close()
@@ -42,16 +38,11 @@ func (cw *chunkWriter) Write(p []byte) (n int, err error) {
 }
 
 func (cw *chunkWriter) flush() {
-	if !cw.wroteHeader {
-		cw.writeHeader(nil)
-	}
+	cw.writeHeader(nil)
 	cw.res.conn.bufw.Flush()
 }
 
 func (cw *chunkWriter) close() {
-	if !cw.wroteHeader {
-		cw.writeHeader(nil)
-	}
 }
 
 type response struct {
@@ -191,11 +182,6 @@ func (w *response) WriteHeader(code int) {
 }
 
 func (cw *chunkWriter) writeHeader(p []byte) {
-	if cw.wroteHeader {
-		return
-	}
-	cw.wroteHeader = true
-
 	w := cw.res
 
 	header := cw.header
