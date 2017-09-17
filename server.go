@@ -249,26 +249,6 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 
 const DefaultMaxHeaderBytes = 1 << 20
 
-type expectContinueReader struct {
-	resp       *response
-	readCloser io.ReadCloser
-	closed     bool
-	sawEOF     bool
-}
-
-func (ecr *expectContinueReader) Read(p []byte) (n int, err error) {
-	if ecr.closed {
-		return 0, errors.New("http: invalid Read on closed Body")
-	}
-	n, err = ecr.readCloser.Read(p)
-	if err == io.EOF {
-		ecr.sawEOF = true
-	}
-	return
-}
-
-const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
-
 func (w *response) Header() Header {
 	if w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader {
 
@@ -277,8 +257,6 @@ func (w *response) Header() Header {
 	w.calledHeader = true
 	return w.handlerHeader
 }
-
-const maxPostHandlerReadBytes = 256 << 10
 
 func (w *response) WriteHeader(code int) {
 	if w.wroteHeader {
@@ -355,17 +333,11 @@ func statusLine(code int) string {
 }
 
 func (w *response) Write(data []byte) (n int, err error) {
-	return w.write(len(data), data, "")
+	return w.write(len(data), data)
 }
 
-func (w *response) WriteString(data string) (n int, err error) {
-	return w.write(len(data), nil, data)
-}
+func (w *response) write(lenData int, dataB []byte) (n int, err error) {
 
-func (w *response) write(lenData int, dataB []byte, dataS string) (n int, err error) {
-	if !w.wroteHeader {
-		w.WriteHeader(StatusOK)
-	}
 	if lenData == 0 {
 		return 0, nil
 	}
@@ -374,11 +346,7 @@ func (w *response) write(lenData int, dataB []byte, dataS string) (n int, err er
 	if w.contentLength != -1 && w.written > w.contentLength {
 		return 0, ErrContentLength
 	}
-	if dataB != nil {
-		return w.w.Write(dataB)
-	} else {
-		return w.w.WriteString(dataS)
-	}
+	return w.w.Write(dataB)
 }
 
 func (w *response) Flush() {
