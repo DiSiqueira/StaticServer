@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -247,16 +246,6 @@ func (w *response) WriteHeader(code int) {
 
 	if w.calledHeader && w.cw.header == nil {
 		w.cw.header = w.handlerHeader.clone()
-	}
-
-	if cl := w.handlerHeader.get("Content-Length"); cl != "" {
-		v, err := strconv.ParseInt(cl, 10, 64)
-		if err == nil && v >= 0 {
-			w.contentLength = v
-		} else {
-			w.conn.server.logf("http: invalid Content-Length of %q", cl)
-			w.handlerHeader.Del("Content-Length")
-		}
 	}
 }
 

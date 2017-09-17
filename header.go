@@ -46,11 +46,6 @@ func (h Header) get(key string) string {
 	return ""
 }
 
-// Del deletes the values associated with key.
-func (h Header) Del(key string) {
-	textproto.MIMEHeader(h).Del(key)
-}
-
 // Write writes a header in wire format.
 func (h Header) Write(w io.Writer) error {
 	return h.WriteSubset(w, nil)
