@@ -8,10 +8,6 @@ import (
 	"sync"
 )
 
-var (
-	crlf = []byte("\r\n")
-)
-
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
@@ -36,11 +32,17 @@ func (cw *chunkWriter) Write(p []byte) (n int, err error) {
 }
 
 func (cw *chunkWriter) flush() {
-	cw.writeHeader(nil)
+	cw.writeHeader()
 	cw.res.conn.bufw.Flush()
 }
 
 func (cw *chunkWriter) close() {
+}
+
+func (cw *chunkWriter) writeHeader() {
+	cw.res.conn.bufw.WriteString(fmt.Sprintf("HTTP/1.0 %d %s\r\n", cw.res.status, statusText[cw.res.status]))
+	cw.header.WriteSubset(cw.res.conn.bufw)
+	cw.res.conn.bufw.Write([]byte("\r\n"))
 }
 
 type response struct {
@@ -49,8 +51,6 @@ type response struct {
 	w             *bufio.Writer
 	cw            chunkWriter
 	handlerHeader Header
-	calledHeader  bool
-	written       int64
 	status        int
 }
 
@@ -90,7 +90,6 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 
 	n0, err := rf.ReadFrom(src)
 	n += n0
-	w.written += n0
 	return n, err
 }
 
@@ -164,22 +163,15 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 }
 
 func (w *response) Header() Header {
-	w.calledHeader = true
 	return w.handlerHeader
 }
 
 func (w *response) WriteHeader(code int) {
 	w.status = code
 
-	if w.calledHeader && w.cw.header == nil {
+	if w.cw.header == nil {
 		w.cw.header = w.handlerHeader.clone()
 	}
-}
-
-func (cw *chunkWriter) writeHeader(p []byte) {
-	cw.res.conn.bufw.WriteString(fmt.Sprintf("HTTP/1.0 %d %s\r\n", cw.res.status, statusText[cw.res.status]))
-	cw.header.WriteSubset(cw.res.conn.bufw)
-	cw.res.conn.bufw.Write(crlf)
 }
 
 func (w *response) Write(data []byte) (n int, err error) {
