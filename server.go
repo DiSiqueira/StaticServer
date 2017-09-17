@@ -14,12 +14,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/textproto"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -311,8 +308,6 @@ type response struct {
 
 type atomicBool int32
 
-func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
-
 // writerOnly hides an io.Writer value's optional ReadFrom method
 // from io.Copy.
 type writerOnly struct {
@@ -361,7 +356,7 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 	w.cw.flush() // make sure Header is written; flush data to rwc
 
 	// Now that cw has been flushed, its chunking field is guaranteed initialized.
-	if !w.cw.chunking && w.bodyAllowed() {
+	if !w.cw.chunking {
 		n0, err := rf.ReadFrom(src)
 		n += n0
 		w.written += n0
@@ -473,18 +468,13 @@ type expectContinueReader struct {
 
 func (ecr *expectContinueReader) Read(p []byte) (n int, err error) {
 	if ecr.closed {
-		return 0, ErrBodyReadAfterClose
+		return 0, errors.New("http: invalid Read on closed Body")
 	}
 	n, err = ecr.readCloser.Read(p)
 	if err == io.EOF {
 		ecr.sawEOF = true
 	}
 	return
-}
-
-func (ecr *expectContinueReader) Close() error {
-	ecr.closed = true
-	return ecr.readCloser.Close()
 }
 
 const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
@@ -622,24 +612,6 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	w.conn.bufw.Write(crlf)
 }
 
-// foreachHeaderElement splits v according to the "#rule" construction
-// in RFC 2616 section 2.1 and calls fn for each non-empty element.
-func foreachHeaderElement(v string, fn func(string)) {
-	v = textproto.TrimString(v)
-	if v == "" {
-		return
-	}
-	if !strings.Contains(v, ",") {
-		fn(v)
-		return
-	}
-	for _, f := range strings.Split(v, ",") {
-		if f = textproto.TrimString(f); f != "" {
-			fn(f)
-		}
-	}
-}
-
 // statusLines is a cache of Status-Line strings, keyed by code (for
 // HTTP/1.1) or negative code (for HTTP/1.0). This is faster than a
 // map keyed by struct of two fields. This map's max size is bounded
@@ -676,15 +648,6 @@ func statusLine(req *Request, code int) string {
 		statusLines[key] = line
 	}
 	return line
-}
-
-// bodyAllowed reports whether a Write is allowed for this response type.
-// It's illegal to call this before the header has been flushed.
-func (w *response) bodyAllowed() bool {
-	if !w.wroteHeader {
-		panic("")
-	}
-	return bodyAllowedForStatus(w.status)
 }
 
 // The Life Of A Write is like this:
@@ -736,9 +699,6 @@ func (w *response) write(lenData int, dataB []byte, dataS string) (n int, err er
 	}
 	if lenData == 0 {
 		return 0, nil
-	}
-	if !w.bodyAllowed() {
-		return 0, ErrBodyNotAllowed
 	}
 
 	w.written += int64(lenData) // ignoring errors, for errorKludge
@@ -840,18 +800,6 @@ const (
 	// transition to StateClosed.
 	StateClosed
 )
-
-var stateName = map[ConnState]string{
-	StateNew:      "new",
-	StateActive:   "active",
-	StateIdle:     "idle",
-	StateHijacked: "hijacked",
-	StateClosed:   "closed",
-}
-
-func (c ConnState) String() string {
-	return stateName[c]
-}
 
 // ErrHandlerTimeout is returned on ResponseWriter Write calls
 // in handlers which have timed out.

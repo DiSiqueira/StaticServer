@@ -14,8 +14,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/url"
-	"strconv"
-	"strings"
 )
 
 const (
@@ -302,83 +300,4 @@ func (r *Request) WithContext(ctx context.Context) *Request {
 func (r *Request) ProtoAtLeast(major, minor int) bool {
 	return r.ProtoMajor > major ||
 		r.ProtoMajor == major && r.ProtoMinor >= minor
-}
-
-// protoAtLeastOutgoing is like ProtoAtLeast, but is for outgoing
-// requests (see issue 18407) where these fields aren't supposed to
-// matter.  As a minor fix for Go 1.8, at least treat (0, 0) as
-// matching HTTP/1.1 or HTTP/1.0.  Only HTTP/1.1 is used.
-// TODO(bradfitz): ideally remove this whole method. It shouldn't be used.
-func (r *Request) protoAtLeastOutgoing(major, minor int) bool {
-	if r.ProtoMajor == 0 && r.ProtoMinor == 0 && major == 1 && minor <= 1 {
-		return true
-	}
-	return r.ProtoAtLeast(major, minor)
-}
-
-// Return value if nonempty, def otherwise.
-func valueOrDefault(value, def string) string {
-	if value != "" {
-		return value
-	}
-	return def
-}
-
-// ParseHTTPVersion parses a HTTP version string.
-// "HTTP/1.0" returns (1, 0, true).
-func ParseHTTPVersion(vers string) (major, minor int, ok bool) {
-	const Big = 1000000 // arbitrary upper bound
-	switch vers {
-	case "HTTP/1.1":
-		return 1, 1, true
-	case "HTTP/1.0":
-		return 1, 0, true
-	}
-	if !strings.HasPrefix(vers, "HTTP/") {
-		return 0, 0, false
-	}
-	dot := strings.Index(vers, ".")
-	if dot < 0 {
-		return 0, 0, false
-	}
-	major, err := strconv.Atoi(vers[5:dot])
-	if err != nil || major < 0 || major > Big {
-		return 0, 0, false
-	}
-	minor, err = strconv.Atoi(vers[dot+1:])
-	if err != nil || minor < 0 || minor > Big {
-		return 0, 0, false
-	}
-	return major, minor, true
-}
-
-func (r *Request) closeBody() {
-	if r.Body != nil {
-		r.Body.Close()
-	}
-}
-
-func (r *Request) isReplayable() bool {
-	if r.Body == nil {
-		switch valueOrDefault(r.Method, "GET") {
-		case "GET", "HEAD", "OPTIONS", "TRACE":
-			return true
-		}
-	}
-	return false
-}
-
-// requestMethodUsuallyLacksBody reports whether the given request
-// method is one that typically does not involve a request body.
-// This is used by the Transport (via
-// transferWriter.shouldSendChunkedRequestBody) to determine whether
-// we try to test-read a byte from a non-nil Request.Body when
-// Request.outgoingLength() returns -1. See the comments in
-// shouldSendChunkedRequestBody.
-func requestMethodUsuallyLacksBody(method string) bool {
-	switch method {
-	case "GET", "HEAD", "DELETE", "OPTIONS", "PROPFIND", "SEARCH":
-		return true
-	}
-	return false
 }
