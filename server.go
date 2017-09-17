@@ -55,16 +55,15 @@ func (cw *chunkWriter) close() {
 }
 
 type response struct {
-	conn                *conn
-	req                 *Request
-	wroteHeader         bool
-	w                   *bufio.Writer
-	cw                  chunkWriter
-	handlerHeader       Header
-	calledHeader        bool
-	written             int64
-	status              int
-	closeAfterReply     bool
+	conn            *conn
+	req             *Request
+	w               *bufio.Writer
+	cw              chunkWriter
+	handlerHeader   Header
+	calledHeader    bool
+	written         int64
+	status          int
+	closeAfterReply bool
 }
 
 type writerOnly struct {
@@ -96,10 +95,6 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 		bufp := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufp)
 		return io.CopyBuffer(writerOnly{w}, src, *bufp)
-	}
-
-	if !w.wroteHeader {
-		w.WriteHeader(StatusOK)
 	}
 
 	w.w.Flush()
@@ -183,20 +178,11 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 const DefaultMaxHeaderBytes = 1 << 20
 
 func (w *response) Header() Header {
-	if w.cw.header == nil && w.wroteHeader && !w.cw.wroteHeader {
-
-		w.cw.header = w.handlerHeader.clone()
-	}
 	w.calledHeader = true
 	return w.handlerHeader
 }
 
 func (w *response) WriteHeader(code int) {
-	if w.wroteHeader {
-		w.conn.server.logf("http: multiple response.WriteHeader calls")
-		return
-	}
-	w.wroteHeader = true
 	w.status = code
 
 	if w.calledHeader && w.cw.header == nil {
@@ -269,9 +255,6 @@ func (w *response) write(data []byte) (n int, err error) {
 }
 
 func (w *response) Flush() {
-	if !w.wroteHeader {
-		w.WriteHeader(StatusOK)
-	}
 	w.w.Flush()
 	w.cw.flush()
 }
