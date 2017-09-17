@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"sync"
-	"time"
 )
 
 var (
@@ -165,8 +163,6 @@ func newBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 	return bufio.NewWriterSize(w, size)
 }
 
-const DefaultMaxHeaderBytes = 1 << 20
-
 func (w *response) Header() Header {
 	w.calledHeader = true
 	return w.handlerHeader
@@ -181,47 +177,12 @@ func (w *response) WriteHeader(code int) {
 }
 
 func (cw *chunkWriter) writeHeader(p []byte) {
-	w := cw.res
-
-	w.conn.bufw.WriteString(statusLine(w.status))
-	cw.header.WriteSubset(w.conn.bufw)
-	w.conn.bufw.Write(crlf)
-}
-
-var (
-	statusMu    sync.RWMutex
-	statusLines = make(map[int]string)
-)
-
-func statusLine(code int) string {
-	key := code
-	statusMu.RLock()
-	line, ok := statusLines[key]
-	statusMu.RUnlock()
-	if ok {
-		return line
-	}
-
-	proto := "HTTP/1.0"
-	codestring := fmt.Sprintf("%03d", code)
-	text, ok := statusText[code]
-	if !ok {
-		text = "status code " + codestring
-	}
-	line = proto + " " + codestring + " " + text + "\r\n"
-	if ok {
-		statusMu.Lock()
-		defer statusMu.Unlock()
-		statusLines[key] = line
-	}
-	return line
+	cw.res.conn.bufw.WriteString(fmt.Sprintf("HTTP/1.0 %d %s\r\n", cw.res.status, statusText[cw.res.status]))
+	cw.header.WriteSubset(cw.res.conn.bufw)
+	cw.res.conn.bufw.Write(crlf)
 }
 
 func (w *response) Write(data []byte) (n int, err error) {
-	return w.write(data)
-}
-
-func (w *response) write(data []byte) (n int, err error) {
 	lenData := len(data)
 	if lenData == 0 {
 		return 0, nil
@@ -235,27 +196,10 @@ func (w *response) Flush() {
 	w.cw.flush()
 }
 
-type HandlerFunc func(ResponseWriter, *Request)
-
 func Error(w ResponseWriter, error string, code int) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(code)
 	fmt.Fprintln(w, error)
 }
 
-func NotFound(w ResponseWriter, r *Request) { Error(w, "404 page not found", StatusNotFound) }
-
-type tcpKeepAliveListener struct {
-	*net.TCPListener
-}
-
-func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
-	tc, err := ln.AcceptTCP()
-	if err != nil {
-		return
-	}
-	tc.SetKeepAlive(true)
-	tc.SetKeepAlivePeriod(3 * time.Minute)
-	return tc, nil
-}
+func NotFound(w ResponseWriter, r *Request) { Error(w, statusText[StatusNotFound], StatusNotFound) }

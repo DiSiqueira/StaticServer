@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"net/textproto"
 	"net/url"
@@ -26,9 +25,8 @@ var statusText = map[int]string{
 }
 
 type Server struct {
-	Port     uint16
-	Handler  Handler
-	ErrorLog *log.Logger
+	Port    uint16
+	Handler Handler
 }
 
 func ListenAndServe(port uint16, handler Handler) error {
@@ -41,7 +39,7 @@ func (srv *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	return srv.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
+	return srv.Serve(ln)
 }
 
 func (srv *Server) Serve(l net.Listener) error {
@@ -58,11 +56,10 @@ func (srv *Server) Serve(l net.Listener) error {
 }
 
 func (srv *Server) newConn(rwc net.Conn) *conn {
-	c := &conn{
+	return &conn{
 		server: srv,
 		rwc:    rwc,
 	}
-	return c
 }
 
 type conn struct {
@@ -77,7 +74,7 @@ type conn struct {
 func (c *conn) serve() {
 	c.r = &connReader{conn: c}
 	c.bufr = newBufioReader(c.r)
-	c.bufw = newBufioWriterSize(checkConnErrorWriter{c}, 4<<10)
+	c.bufw = newBufioWriterSize(c.rwc, 4<<10)
 
 	for {
 		w, err := c.readRequest()
@@ -148,14 +145,12 @@ type Request struct {
 }
 
 // parseRequestLine parses "GET /foo HTTP/1.1" into its three parts.
-func parseRequestLine(line string) (requestURI string, ok bool) {
-	s1 := strings.Index(line, " ")
-	s2 := strings.Index(line[s1+1:], " ")
-	if s1 < 0 || s2 < 0 {
-		return
+func parseRequestLine(line string) (string, bool) {
+	part := strings.Split(line, " ")
+	if len(part) != 3 {
+		return "", false
 	}
-	s2 += s1 + 1
-	return line[s1+1 : s2], true
+	return part[1], true
 }
 
 var textprotoReaderPool sync.Pool
@@ -196,16 +191,4 @@ func bufioWriterPool(size int) *sync.Pool {
 		return &bufioWriter4kPool
 	}
 	return nil
-}
-
-type checkConnErrorWriter struct {
-	c *conn
-}
-
-func (w checkConnErrorWriter) Write(p []byte) (n int, err error) {
-	n, err = w.c.rwc.Write(p)
-	if err != nil && w.c.werr == nil {
-		w.c.werr = err
-	}
-	return
 }
