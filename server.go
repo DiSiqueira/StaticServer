@@ -94,12 +94,10 @@ func (w *response) ReadFrom(src io.Reader) (n int64, err error) {
 }
 
 type connReader struct {
-	conn    *conn
-	mu      sync.Mutex
-	byteBuf [1]byte
-	bgErr   error
-	cond    *sync.Cond
-	inRead  bool
+	conn  *conn
+	mu    sync.Mutex
+	bgErr error
+	cond  *sync.Cond
 }
 
 func (cr *connReader) lock() {
@@ -113,10 +111,6 @@ func (cr *connReader) unlock() { cr.mu.Unlock() }
 
 func (cr *connReader) Read(p []byte) (n int, err error) {
 	cr.lock()
-	if cr.inRead {
-		cr.unlock()
-		panic("invalid concurrent Body.Read call")
-	}
 	if cr.bgErr != nil {
 		err = cr.bgErr
 		cr.unlock()
@@ -126,7 +120,6 @@ func (cr *connReader) Read(p []byte) (n int, err error) {
 		cr.unlock()
 		return 0, nil
 	}
-	cr.inRead = true
 	cr.unlock()
 	n, err = cr.conn.rwc.Read(p)
 
