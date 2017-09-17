@@ -75,7 +75,6 @@ func (f *fileServer) ServeHTTP(w ResponseWriter, r *Request) {
 		NotFound(w, r)
 		return
 	}
-	code := StatusOK
 
 	w.Header().Set("Content-Type", string(urlFile.ContentType()))
 	w.Header().Set("Server", "DStaticServer 0.1")
@@ -83,7 +82,7 @@ func (f *fileServer) ServeHTTP(w ResponseWriter, r *Request) {
 	sendSize := d.Size()
 	w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
 
-	w.WriteHeader(code)
+	w.WriteHeader(StatusOK)
 	io.CopyN(w, file, sendSize)
 }
 

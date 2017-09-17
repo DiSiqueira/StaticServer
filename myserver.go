@@ -106,7 +106,6 @@ func (c *conn) readRequest() (w *response, err error) {
 		conn:          c,
 		req:           req,
 		handlerHeader: make(Header),
-		contentLength: -1,
 	}
 
 	w.cw.res = w

@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrBodyNotAllowed = errors.New("http: request method or response status code does not allow body")
-	ErrContentLength  = errors.New("http: wrote more than the declared Content-Length")
+	ErrContentLength = errors.New("http: wrote more than the declared Content-Length")
+	crlf             = []byte("\r\n")
 )
 
 type Handler interface {
@@ -31,10 +31,6 @@ type chunkWriter struct {
 	header      Header
 	wroteHeader bool
 }
-
-var (
-	crlf = []byte("\r\n")
-)
 
 func (cw *chunkWriter) Write(p []byte) (n int, err error) {
 	if !cw.wroteHeader {
@@ -69,7 +65,6 @@ type response struct {
 	handlerHeader       Header
 	calledHeader        bool
 	written             int64
-	contentLength       int64
 	status              int
 	closeAfterReply     bool
 	requestBodyLimitHit bool
@@ -273,10 +268,6 @@ func (w *response) write(data []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	w.written += int64(lenData)
-	if w.contentLength != -1 && w.written > w.contentLength {
-		return 0, ErrContentLength
-	}
 	return w.w.Write(data)
 }
 
