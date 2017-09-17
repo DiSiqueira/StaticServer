@@ -65,7 +65,6 @@ func (srv *Server) newConn(rwc net.Conn) *conn {
 type conn struct {
 	server *Server
 	rwc    net.Conn
-	werr   error
 	r      *connReader
 	bufr   *bufio.Reader
 	bufw   *bufio.Writer
@@ -90,6 +89,8 @@ func (c *conn) serve() {
 }
 
 func (c *conn) readRequest() (w *response, err error) {
+	const bufferBeforeChunkingSize = 2048
+
 	req, err := readRequest(c.bufr)
 	if err != nil {
 		return nil, err
@@ -106,8 +107,6 @@ func (c *conn) readRequest() (w *response, err error) {
 	return w, nil
 }
 
-const bufferBeforeChunkingSize = 2048
-
 func readRequest(b *bufio.Reader) (req *Request, err error) {
 	tp := newTextprotoReader(b)
 	req = new(Request)
@@ -121,7 +120,7 @@ func readRequest(b *bufio.Reader) (req *Request, err error) {
 	var ok bool
 	req.RequestURI, ok = parseRequestLine(s)
 	if !ok {
-		return nil, &badStringError{"malformed HTTP request", s}
+		return nil, fmt.Errorf("malformed HTTP request %q", s)
 	}
 
 	if req.URL, err = url.ParseRequestURI(req.RequestURI); err != nil {
@@ -130,13 +129,6 @@ func readRequest(b *bufio.Reader) (req *Request, err error) {
 
 	return req, nil
 }
-
-type badStringError struct {
-	what string
-	str  string
-}
-
-func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.str) }
 
 type Request struct {
 	Method     string

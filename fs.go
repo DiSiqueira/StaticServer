@@ -54,25 +54,25 @@ func NewFileTableServer(urlList fileTable) Handler {
 func (f *fileServer) ServeHTTP(w ResponseWriter, r *Request) {
 	urlFile, ok := f.urlList[r.URL.Path]
 	if !ok {
-		NotFound(w, r)
+		NotFound(w)
 		return
 	}
 
 	file, err := urlFile.File()
 	if err != nil {
-		mytoHTTPError(w, r, err)
+		mytoHTTPError(w, err)
 		return
 	}
 	defer file.Close()
 
 	d, err := file.Stat()
 	if err != nil {
-		mytoHTTPError(w, r, err)
+		mytoHTTPError(w, err)
 		return
 	}
 
 	if d.IsDir() {
-		NotFound(w, r)
+		NotFound(w)
 		return
 	}
 
@@ -86,15 +86,15 @@ func (f *fileServer) ServeHTTP(w ResponseWriter, r *Request) {
 	io.CopyN(w, file, sendSize)
 }
 
-func mytoHTTPError(w ResponseWriter, r *Request, err error) {
+func mytoHTTPError(w ResponseWriter, err error) {
 	if os.IsNotExist(err) {
-		NotFound(w, r)
+		NotFound(w)
 		return
 	}
 	if os.IsPermission(err) {
-		Error(w, "403 Forbidden", StatusForbidden)
+		Forbidden(w)
 		return
 	}
-	Error(w, "500 Internal Server Error", StatusInternalServerError)
+	InternalServerError(w)
 	return
 }

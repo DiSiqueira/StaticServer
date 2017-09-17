@@ -194,4 +194,14 @@ func Error(w ResponseWriter, error string, code int) {
 	fmt.Fprintln(w, error)
 }
 
-func NotFound(w ResponseWriter, r *Request) { Error(w, statusText[StatusNotFound], StatusNotFound) }
+func NotFound(w ResponseWriter) {
+	Error(w, statusText[StatusNotFound], StatusNotFound)
+}
+
+func Forbidden(w ResponseWriter) {
+	Error(w, statusText[StatusForbidden], StatusForbidden)
+}
+
+func InternalServerError(w ResponseWriter) {
+	Error(w, statusText[StatusInternalServerError], StatusInternalServerError)
+}
