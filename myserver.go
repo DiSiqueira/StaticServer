@@ -11,6 +11,20 @@ import (
 	"sync"
 )
 
+const (
+	StatusOK                  = 200
+	StatusForbidden           = 403
+	StatusNotFound            = 404
+	StatusInternalServerError = 500
+)
+
+var statusText = map[int]string{
+	StatusOK:                  "OK",
+	StatusForbidden:           "Forbidden",
+	StatusNotFound:            "Not Found",
+	StatusInternalServerError: "Internal Server Error",
+}
+
 type Server struct {
 	Port     uint16
 	Handler  Handler
