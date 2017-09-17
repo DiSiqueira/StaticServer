@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -436,12 +435,6 @@ type closeWriter interface {
 	CloseWrite() error
 }
 
-var _ closeWriter = (*net.TCPConn)(nil)
-
-type badRequestError string
-
-func (e badRequestError) Error() string { return "Bad Request: " + string(e) }
-
 type HandlerFunc func(ResponseWriter, *Request)
 
 func Error(w ResponseWriter, error string, code int) {
@@ -457,46 +450,6 @@ type muxEntry struct {
 	explicit bool
 	h        Handler
 	pattern  string
-}
-
-var ErrHandlerTimeout = errors.New("http: Handler timeout")
-
-type timeoutWriter struct {
-	w           ResponseWriter
-	h           Header
-	wbuf        bytes.Buffer
-	mu          sync.Mutex
-	timedOut    bool
-	wroteHeader bool
-	code        int
-}
-
-func (tw *timeoutWriter) Header() Header { return tw.h }
-
-func (tw *timeoutWriter) Write(p []byte) (int, error) {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	if tw.timedOut {
-		return 0, ErrHandlerTimeout
-	}
-	if !tw.wroteHeader {
-		tw.writeHeader(StatusOK)
-	}
-	return tw.wbuf.Write(p)
-}
-
-func (tw *timeoutWriter) WriteHeader(code int) {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	if tw.timedOut || tw.wroteHeader {
-		return
-	}
-	tw.writeHeader(code)
-}
-
-func (tw *timeoutWriter) writeHeader(code int) {
-	tw.wroteHeader = true
-	tw.code = code
 }
 
 type tcpKeepAliveListener struct {
