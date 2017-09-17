@@ -65,10 +65,6 @@ func (srv *Server) newConn(rwc net.Conn) *conn {
 	return c
 }
 
-func (s *Server) logf(format string, args ...interface{}) {
-	log.Printf(format, args...)
-}
-
 type conn struct {
 	server *Server
 	rwc    net.Conn
