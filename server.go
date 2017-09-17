@@ -28,18 +28,6 @@ type ResponseWriter interface {
 	WriteHeader(int)
 }
 
-type Flusher interface {
-	Flush()
-}
-
-type Hijacker interface {
-	Hijack() (net.Conn, *bufio.ReadWriter, error)
-}
-
-type CloseNotifier interface {
-	CloseNotify() <-chan bool
-}
-
 type chunkWriter struct {
 	res         *response
 	header      Header
@@ -48,8 +36,7 @@ type chunkWriter struct {
 }
 
 var (
-	crlf       = []byte("\r\n")
-	colonSpace = []byte(": ")
+	crlf = []byte("\r\n")
 )
 
 func (cw *chunkWriter) Write(p []byte) (n int, err error) {
@@ -173,12 +160,10 @@ type readResult struct {
 type connReader struct {
 	conn    *conn
 	mu      sync.Mutex
-	hasByte bool
 	byteBuf [1]byte
 	bgErr   error
 	cond    *sync.Cond
 	inRead  bool
-	aborted bool
 }
 
 func (cr *connReader) lock() {
@@ -204,12 +189,6 @@ func (cr *connReader) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		cr.unlock()
 		return 0, nil
-	}
-	if cr.hasByte {
-		p[0] = cr.byteBuf[0]
-		cr.hasByte = false
-		cr.unlock()
-		return 1, nil
 	}
 	cr.inRead = true
 	cr.unlock()
@@ -333,11 +312,11 @@ func statusLine(code int) string {
 }
 
 func (w *response) Write(data []byte) (n int, err error) {
-	return w.write(len(data), data)
+	return w.write(data)
 }
 
-func (w *response) write(lenData int, dataB []byte) (n int, err error) {
-
+func (w *response) write(data []byte) (n int, err error) {
+	lenData := len(data)
 	if lenData == 0 {
 		return 0, nil
 	}
@@ -346,7 +325,7 @@ func (w *response) write(lenData int, dataB []byte) (n int, err error) {
 	if w.contentLength != -1 && w.written > w.contentLength {
 		return 0, ErrContentLength
 	}
-	return w.w.Write(dataB)
+	return w.w.Write(data)
 }
 
 func (w *response) Flush() {
