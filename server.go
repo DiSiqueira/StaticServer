@@ -303,46 +303,6 @@ func (w *response) WriteHeader(code int) {
 	}
 }
 
-type extraHeader struct {
-	contentType      string
-	connection       string
-	transferEncoding string
-	date             []byte
-	contentLength    []byte
-}
-
-var extraHeaderKeys = [][]byte{
-	[]byte("Content-Type"),
-	[]byte("Connection"),
-	[]byte("Transfer-Encoding"),
-}
-
-var (
-	headerContentLength = []byte("Content-Length: ")
-	headerDate          = []byte("Date: ")
-)
-
-func (h extraHeader) Write(w *bufio.Writer) {
-	if h.date != nil {
-		w.Write(headerDate)
-		w.Write(h.date)
-		w.Write(crlf)
-	}
-	if h.contentLength != nil {
-		w.Write(headerContentLength)
-		w.Write(h.contentLength)
-		w.Write(crlf)
-	}
-	for i, v := range []string{h.contentType, h.connection, h.transferEncoding} {
-		if v != "" {
-			w.Write(extraHeaderKeys[i])
-			w.Write(colonSpace)
-			w.WriteString(v)
-			w.Write(crlf)
-		}
-	}
-}
-
 func (cw *chunkWriter) writeHeader(p []byte) {
 	if cw.wroteHeader {
 		return
@@ -357,13 +317,11 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		header = w.handlerHeader
 	}
 	var excludeHeader map[string]bool
-	var setHeader extraHeader
 
 	w.closeAfterReply = true
 
-	w.conn.bufw.WriteString(statusLine(w.req, w.status))
+	w.conn.bufw.WriteString(statusLine(w.status))
 	cw.header.WriteSubset(w.conn.bufw, excludeHeader)
-	setHeader.Write(w.conn.bufw)
 	w.conn.bufw.Write(crlf)
 }
 
@@ -372,7 +330,7 @@ var (
 	statusLines = make(map[int]string)
 )
 
-func statusLine(req *Request, code int) string {
+func statusLine(code int) string {
 	key := code
 	statusMu.RLock()
 	line, ok := statusLines[key]
@@ -431,10 +389,6 @@ func (w *response) Flush() {
 	w.cw.flush()
 }
 
-type closeWriter interface {
-	CloseWrite() error
-}
-
 type HandlerFunc func(ResponseWriter, *Request)
 
 func Error(w ResponseWriter, error string, code int) {
@@ -445,12 +399,6 @@ func Error(w ResponseWriter, error string, code int) {
 }
 
 func NotFound(w ResponseWriter, r *Request) { Error(w, "404 page not found", StatusNotFound) }
-
-type muxEntry struct {
-	explicit bool
-	h        Handler
-	pattern  string
-}
 
 type tcpKeepAliveListener struct {
 	*net.TCPListener
